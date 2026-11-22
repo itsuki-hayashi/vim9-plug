@@ -32,6 +32,8 @@ const is_win = has('win32')
 const default_shell = is_win ? 'cmd.exe' : 'sh'
 const upgrade_origin = 'https://github.com/itsuki-hayashi/vim9-plug.git'
 const use_jobs = has('job') && has('channel')
+const script_prefix = expand('<SID>')
+const script_number = str2nr(matchstr(script_prefix, '\d\+'))
 const base_spec: dict<any> = {branch: '', frozen: 0}
 var loaded: dict<number> = exists('loaded') ? loaded : {}
 var triggers: dict<dict<list<string>>> = exists('triggers') ? triggers : {}
@@ -41,13 +43,11 @@ var codepage = 0
 var git_version: list<number> = []
 var first_rtp = ''
 var last_rtp = ''
-var prtp = exists('prtp') ? prtp : ''
-var middle = exists('middle') ? middle : ''
-var rtp_reset = exists('rtp_reset') ? rtp_reset : true
+var managed_rtp: dict<bool> = exists('managed_rtp') ? managed_rtp : {}
 var clean_count = 0
 var update_state: dict<any> = {}
 var jobs: dict<dict<any>> = {}
-var clone_opt: list<string> = []
+var shallow_clone_opt: list<string> = []
 var submodule_opts: list<string> = []
 var pumping = false
 var plug_file = ''
@@ -104,88 +104,32 @@ def IsPowershell(shell: string): bool
   return shell =~# 'powershell\(\.exe\)\?$' || shell =~# 'pwsh\(\.exe\)\?$'
 enddef
 
-def Isabsolute(dir: string): bool
-  return dir =~# '^/' || (has('win32') && dir =~? '^\%(\\\|[A-Z]:\)')
-enddef
-
-def GitDir(dir: string): string
-  var gitdir = Trim(dir) .. '/.git'
-  if isdirectory(gitdir)
-    return gitdir
-  endif
-  if !filereadable(gitdir)
-    return ''
-  endif
-  gitdir = matchstr(get(readfile(gitdir), 0, ''), '^gitdir: \zs.*')
-  if !empty(gitdir) && !Isabsolute(gitdir)
-    gitdir = dir .. '/' .. gitdir
-  endif
-  return isdirectory(gitdir) ? gitdir : ''
-enddef
-
+# Let Git resolve worktree configuration, packed refs and the ref backend.
+# An explicit git dir keeps a missing checkout from inheriting a parent repo.
 def GitOriginUrl(dir: string): string
-  var gitdir = GitDir(dir)
-  var config = gitdir .. '/config'
-  if empty(gitdir) || !filereadable(config)
-    return ''
-  endif
-  return matchstr(join(readfile(config)), '\[remote "origin"\].\{-}url\s*=\s*\zs\S*\ze')
+  return SystemChomp(['git', '--git-dir=.git', 'config', '--get', 'remote.origin.url'], dir)
 enddef
 
 def GitRevision(dir: string): string
-  var gitdir = GitDir(dir)
-  var head = gitdir .. '/HEAD'
-  if empty(gitdir) || !filereadable(head)
-    return ''
-  endif
-
-  var line = get(readfile(head), 0, '')
-  var ref = matchstr(line, '^ref: \zs.*')
-  if empty(ref)
-    return line
-  endif
-
-  if filereadable(gitdir .. '/' .. ref)
-    return get(readfile(gitdir .. '/' .. ref), 0, '')
-  endif
-
-  if filereadable(gitdir .. '/packed-refs')
-    for packed_ref in readfile(gitdir .. '/packed-refs')
-      if packed_ref =~# ' ' .. ref
-        return matchstr(packed_ref, '^[0-9a-f]*')
-      endif
-    endfor
-  endif
-
-  return ''
+  return SystemChomp(['git', '--git-dir=.git', 'rev-parse', '--verify', 'HEAD'], dir)
 enddef
 
 def GitLocalBranch(dir: string): string
-  var gitdir = GitDir(dir)
-  var head = gitdir .. '/HEAD'
-  if empty(gitdir) || !filereadable(head)
-    return ''
-  endif
-  var branch = matchstr(get(readfile(head), 0, ''), '^ref: refs/heads/\zs.*')
-  return !empty(branch) ? branch : 'HEAD'
+  final ref = SystemChomp(['git', '--git-dir=.git', 'symbolic-ref', '-q', 'HEAD'], dir)
+  return empty(ref) ? 'HEAD' : substitute(ref, '^refs/heads/', '', '')
 enddef
 
 def GitOriginBranch(spec: dict<any>): string
   if !empty(spec.branch)
     return spec.branch
   endif
-
-  # The file may not be present if this is a local repository
-  var gitdir = GitDir(spec.dir)
-  var origin_head = gitdir .. '/refs/remotes/origin/HEAD'
-  if !empty(gitdir) && filereadable(origin_head)
-    return matchstr(get(readfile(origin_head), 0, ''),
-                      '^ref: refs/remotes/origin/\zs.*')
+  final ref = SystemChomp([
+    'git', '--git-dir=.git', 'symbolic-ref', '-q', 'refs/remotes/origin/HEAD',
+  ], spec.dir)
+  if !empty(ref)
+    return substitute(ref, '^refs/remotes/origin/', '', '')
   endif
-
-  # The command may not return the name of a branch in detached HEAD state
-  var result = Lines(System(['git', 'symbolic-ref', '--short', 'HEAD'], spec.dir))
-  return shell_error != 0 ? '' : result[-1]
+  return SystemChomp(['git', '--git-dir=.git', 'symbolic-ref', '--short', 'HEAD'], spec.dir)
 enddef
 
 def GetWorkingDirectory(): string
@@ -206,17 +150,20 @@ enddef
 
 export def Begin(directory: string = ''): bool
   var home: string
+  final first_entry = get(SplitRtp(), 0, '')
   if !empty(directory)
     home = Path(ModifyFilename(ExpandFilename(directory), ':p'))
   elseif exists('g:plug_home')
     home = Path(g:plug_home)
-  elseif !empty(&rtp)
-    home = Path(split(&rtp, ',')[0]) .. '/plugged'
+  elseif !empty(first_entry)
+    home = Path(RuntimeDirectory(first_entry) .. '/plugged')
   else
     Err('Unable to determine plug home. Pass a directory to Begin().')
     return false
   endif
-  if ModifyFilename(home, ':t') ==# 'plugin' && ModifyFilename(home, ':h') ==# first_rtp
+  final standard_plugin = Path(RuntimeDirectory(first_rtp) .. '/plugin')
+  final absolute_home = Path(ModifyFilename(home, ':p'))
+  if !empty(first_rtp) && (is_win ? absolute_home ==? standard_plugin : absolute_home == standard_plugin)
     Err('Invalid plug home. ' .. home .. ' is a standard Vim runtime path and is not allowed.')
     return false
   endif
@@ -225,9 +172,7 @@ export def Begin(directory: string = ''): bool
   g:plug_home = home
   g:plugs = {}
   g:plugs_order = []
-  for name in keys(triggers)
-    RemoveTriggers(name)
-  endfor
+  ClearTriggers()
 
   RegisterCommands()
   return true
@@ -292,6 +237,7 @@ export def End()
     return
   endif
 
+  ClearTriggers()
   if exists('#PlugLOD')
     augroup PlugLOD
       autocmd!
@@ -317,16 +263,17 @@ export def End()
       triggers[name] = { 'map': [], 'cmd': [] }
       for cmd in ToA(plug.on)
         if cmd =~? '^<Plug>.\+'
-          if empty(mapcheck(cmd)) && empty(mapcheck(cmd, 'i'))
+          if empty(mapcheck(cmd, 'n')) && empty(mapcheck(cmd, 'i'))
+              && empty(mapcheck(cmd, 'v')) && empty(mapcheck(cmd, 'o'))
             Assoc(lod.map, cmd, name)
+            add(triggers[name].map, cmd)
           endif
-          add(triggers[name].map, cmd)
         elseif cmd =~# '^[A-Z]'
           final command_name = substitute(cmd, '!*$', '', '')
           if exists(':' .. command_name) != 2
             Assoc(lod.cmd, command_name, name)
+            add(triggers[name].cmd, command_name)
           endif
-          add(triggers[name].cmd, command_name)
         else
           Err('Invalid `on` option: ' .. cmd ..
               '. Should start with an uppercase letter or `<Plug>`.')
@@ -349,7 +296,7 @@ export def End()
 
   for [cmd, names] in items(lod.cmd)
     execute printf(
-          'command! -nargs=* -range -bang -complete=file %s call LodCmd(%s, "<bang>", <line1>, <line2>, <q-args>, <q-mods>, %s)',
+          'command! -nargs=* -range -bang -complete=file %s call <SID>LodCmd(%s, "<bang>", <line1>, <line2>, <q-args>, <q-mods>, %s, <range>)',
           cmd, string(cmd), string(names))
   endfor
 
@@ -471,47 +418,41 @@ def Warn(cmd: string, msg: string): number
   return 0
 enddef
 
-def EscapeRuntimePath(path: string): string
-  return escape(path, ' ,')
+def RuntimeDirectory(entry: string): string
+  return Path(ModifyFilename(substitute(entry, '\\,', ',', 'g'), ':p'))
 enddef
 
-def RemoveRtp()
-  for name in LoadedNames()
-    var rtp = PluginRuntimePath(g:plugs[name])
-    execute 'set rtp-=' .. EscapeRuntimePath(rtp)
-    var after = globpath(escape(rtp, ','), 'after')
-    if isdirectory(after)
-      execute 'set rtp-=' .. EscapeRuntimePath(after)
-    endif
-  endfor
+def AddRuntimeEntry(entries: list<string>, directory: string)
+  final entry = escape(directory, ',')
+  if entry != first_rtp && entry != last_rtp && !has_key(managed_rtp, entry)
+    managed_rtp[entry] = true
+    add(entries, entry)
+  endif
 enddef
 
 def ReorgRtp()
+  final previous = managed_rtp
+  managed_rtp = {}
+  var roots: list<string> = []
+  var afters: list<string> = []
+  for name in LoadedNames()
+    final root = PluginRuntimePath(g:plugs[name])
+    AddRuntimeEntry(roots, root)
+    if isdirectory(root .. '/after')
+      AddRuntimeEntry(afters, Path(root .. '/after'))
+    endif
+  endfor
+
+  # Keep outside runtimepath edits while replacing the old managed entries.
+  var middle = filter(SplitRtp(), (_, entry) => entry != first_rtp
+    && entry != last_rtp && !has_key(previous, entry) && !has_key(managed_rtp, entry))
   if !empty(first_rtp)
-    execute 'set rtp-=' .. first_rtp
-    execute 'set rtp-=' .. last_rtp
+    insert(roots, first_rtp)
   endif
-
-  # &rtp is modified from outside
-  if !rtp_reset && prtp !=# &rtp
-    RemoveRtp()
-    rtp_reset = true
+  if !empty(last_rtp) && last_rtp != first_rtp
+    add(afters, last_rtp)
   endif
-
-  middle = rtp_reset ? &rtp : middle
-  rtp_reset = false
-  var rtps     = map(LoadedNames(), (_, name) => PluginRuntimePath(g:plugs[name]))
-  var afters   = map(filter(copy(rtps), (_, dir) => isdirectory(dir .. '/after')), (_, dir) => Path(dir .. '/after'))
-  var rtp      = join(map(rtps, (_, dir) => escape(dir, ',')), ',')
-                     .. ',' .. middle .. ','
-                     .. join(map(afters, (_, dir) => escape(dir, ',')), ',')
-  &rtp     = substitute(substitute(rtp, ',,*', ',', 'g'), '^,\|,$', '', 'g')
-  prtp   = &rtp
-
-  if !empty(first_rtp)
-    execute 'set rtp^=' .. first_rtp
-    execute 'set rtp+=' .. last_rtp
-  endif
+  &rtp = join(roots + middle + afters, ',')
 enddef
 
 def Doautocmd(...args: list<string>)
@@ -560,28 +501,80 @@ export def Load(names: list<string>): bool
   return false
 enddef
 
+def RemoveCommandTrigger(cmd: string)
+  # :filter matches the name itself. A local command is listed before the global one.
+  final rows = split(execute('silent 0verbose filter /^' .. cmd .. '$/ command ' .. cmd), "\n")[1 :]
+  final call_tail = 'LodCmd(' .. string(cmd) .. ', "<bang>", <line1>, <line2>, <q-args>, <q-mods>, '
+  # Existing placeholders may predate an in-session upgrade to <SID> bindings.
+  if empty(rows) || stridx(rows[-1], '! ') != 0
+      || (stridx(rows[-1], 'call ' .. script_prefix .. call_tail) < 0
+      && stridx(rows[-1], 'call ' .. call_tail) < 0)
+    return
+  endif
+  if len(rows) == 1
+    execute 'delcommand' cmd
+    return
+  endif
+  # :delcommand prefers a shadowing buffer-local definition. Delete the global
+  # placeholder from a temporary tab without disturbing the caller's buffers.
+  final caller = win_getid()
+  noautocmd keepalt tabnew
+  try
+    setlocal bufhidden=wipe
+    execute 'delcommand' cmd
+  finally
+    noautocmd tabclose
+    noautocmd call win_gotoid(caller)
+  endtry
+enddef
+
 def RemoveTriggers(name: string)
   if !has_key(triggers, name)
     return
   endif
   for cmd in triggers[name].cmd
-    execute 'silent! delc' cmd
+    RemoveCommandTrigger(cmd)
   endfor
-  for map in triggers[name].map
-    execute 'silent! unmap' map
-    execute 'silent! iunmap' map
-  endfor
+  if !empty(triggers[name].map)
+    # maplist() includes globals hidden by buffer-local mappings and reports
+    # partial mode replacements (e.g. a visual mapping replaced only in x).
+    for mapping in maplist()
+      if mapping.buffer || mapping.sid != script_number
+        continue
+      endif
+      for lhs in triggers[name].map
+        if stridx(mapping.rhs, '<SID>LodMap(' .. string(lhs) .. ',') >= 0
+          execute mapping.mode .. 'unmap' mapping.lhs
+          break
+        endif
+      endfor
+    endfor
+  endif
   remove(triggers, name)
 enddef
 
-def Lod(names: list<string>, types: list<string>, ...args: list<string>)
+def ClearTriggers()
+  for name in keys(triggers)
+    RemoveTriggers(name)
+  endfor
+enddef
+
+def Lod(names: list<string>, types: list<string>, ...args: list<string>): bool
+  var newly_loaded: list<string> = []
   for name in names
+    if get(loaded, name, 0)
+      continue
+    endif
     RemoveTriggers(name)
     loaded[name] = 1
+    add(newly_loaded, name)
   endfor
+  if empty(newly_loaded)
+    return false
+  endif
   ReorgRtp()
 
-  for name in names
+  for name in newly_loaded
     var rtp = PluginRuntimePath(g:plugs[name])
     for dir in types
       Source(rtp, dir .. '/**/*.vim')
@@ -594,20 +587,30 @@ def Lod(names: list<string>, types: list<string>, ...args: list<string>)
     endif
     Doautocmd('User', name)
   endfor
+  return true
 enddef
 
 def LodFt(pat: string, names: list<string>)
   var syn = 'syntax/' .. pat .. '.vim'
-  Lod(names, ['plugin', 'after/plugin'], syn, 'after/' .. syn)
+  final changed = Lod(names, ['plugin', 'after/plugin'], syn, 'after/' .. syn)
   execute 'autocmd! PlugLOD FileType' pat
-  Doautocmd('filetypeplugin', 'FileType')
-  Doautocmd('filetypeindent', 'FileType')
+  if changed
+    Doautocmd('filetypeplugin', 'FileType')
+    Doautocmd('filetypeindent', 'FileType')
+  endif
 enddef
 
-def LodCmd(cmd: string, bang: string, l1: number, l2: number, args: string, mods: string, names: list<string>)
+# Triggers installed before an in-session upgrade omit the range count.
+def LodCmd(cmd: string, bang: string, l1: number, l2: number, args: string,
+    mods: string, names: list<string>, range_count: number = l1 == l2 ? 0 : 2)
   Lod(names, ['ftdetect', 'after/ftdetect', 'plugin', 'after/plugin'])
   Dobufread(names)
-  final address = l1 == l2 ? '' : printf(':%d,%d', l1, l2)
+  var address = ''
+  if range_count == 1
+    address = ':' .. l2
+  elseif range_count == 2
+    address = printf(':%d,%d', l1, l2)
+  endif
   execute printf('%s %s%s%s %s', mods, address, cmd, bang, args)
 enddef
 
@@ -916,12 +919,10 @@ def ClosePane()
   endif
 enddef
 
-def AssignName()
-  # Assign buffer name
-  var prefix = '[Plugins]'
-  var name   = prefix
-  var idx    = 2
-  while bufexists(name)
+def AssignName(prefix: string = '[Plugins]')
+  var name = prefix
+  var idx = 2
+  while bufexists(name) && bufnr(name) != bufnr()
     name = printf('%s (%s)', prefix, idx)
     idx += 1
   endwhile
@@ -1092,12 +1093,12 @@ def Finish(pull: number)
 enddef
 
 def Retry()
-  if empty(update_state.errors)
+  if empty(get(update_state, 'errors', []))
     return
   endif
   echo ""
-  UpdateImpl(update_state.pull, update_state.force,
-            extend(copy(update_state.errors), [string(update_state.threads)]))
+  UpdatePlugins(update_state.pull, update_state.force, update_state.errors,
+    has('vim_starting'), update_state.threads)
 enddef
 
 def IsManaged(name: string): bool
@@ -1113,7 +1114,13 @@ def UpdateImpl(pull: number, force: number, arguments: list<string>)
   final selected = filter(copy(arguments), (_, arg) => arg != '--sync')
   final thread_count = !empty(selected) && selected[-1] =~ '^[1-9][0-9]*$'
       ? str2nr(remove(selected, -1))
-      : str2nr(get(g:, 'plug_threads', 16) .. '')
+      : 0
+  UpdatePlugins(pull, force, selected, sync, thread_count)
+enddef
+
+def UpdatePlugins(pull: number, force: number, selected: list<string>,
+    sync: bool, threads: number = 0)
+  final thread_count = threads > 0 ? threads : str2nr(get(g:, 'plug_threads', 16) .. '')
   final todo = filter(deepcopy(g:plugs), (name, spec) =>
     has_key(spec, 'uri') && (empty(selected)
       ? !Enabled(spec.frozen) || !isdirectory(spec.dir)
@@ -1160,16 +1167,12 @@ def UpdateImpl(pull: number, force: number, arguments: list<string>)
   append(0, ['', ''])
   normal! 2G
 
-  # Override Git's clone.defaultRemoteName for repositories managed here.
-  clone_opt = ['--origin', 'origin']
+  shallow_clone_opt = []
   if Enabled(get(g:, 'plug_shallow', 1))
-    extend(clone_opt, ['--depth', '1'])
+    extend(shallow_clone_opt, ['--depth', '1'])
     if GitVersionRequirement(1, 7, 10)
-      add(clone_opt, '--no-single-branch')
+      add(shallow_clone_opt, '--no-single-branch')
     endif
-  endif
-  if has('win32unix') || has('wsl')
-    extend(clone_opt, ['-c', 'core.eol=lf', '-c', 'core.autocrlf=input'])
   endif
   submodule_opts = GitVersionRequirement(2, 8) ? ['--jobs=' .. thread_count] : []
 
@@ -1563,9 +1566,13 @@ def QueuePlugin(name: string, spec: dict<any>)
 
   final has_tag = has_key(spec, 'tag')
   if new
-    final cmd = ['git', 'clone']
+    # Managed checkouts always use origin, including full clones for tags.
+    final cmd = ['git', 'clone', '--origin', 'origin']
     if !has_tag
-      extend(cmd, clone_opt)
+      extend(cmd, shallow_clone_opt)
+    endif
+    if has('win32unix') || has('wsl')
+      extend(cmd, ['-c', 'core.eol=lf', '-c', 'core.autocrlf=input'])
     endif
     if !empty(progress)
       add(cmd, progress)
@@ -1588,7 +1595,10 @@ def QueuePlugin(name: string, spec: dict<any>)
   final fetch = DisableCredentialHelper()
     ? ['git', '-c', 'credential.helper=', 'fetch']
     : ['git', 'fetch']
-  if has_tag && filereadable(spec.dir .. '/.git/shallow')
+  if has_tag && (filereadable(spec.dir .. '/.git/shallow')
+      || (filereadable(spec.dir .. '/.git') && SystemChomp([
+        'git', 'rev-parse', '--is-shallow-repository',
+      ], spec.dir) == 'true'))
     extend(fetch, ['--depth', '99999999'])
   endif
   if !empty(progress)
@@ -1627,8 +1637,66 @@ export def ShellEscape(arg: string, shell: string = default_shell, for_batch: bo
   return ShellescSh(arg)
 enddef
 
-def GlobDir(path: string): list<string>
-  return map(filter(Glob(path, '**'), (_, dir) => isdirectory(dir)), (_, dir) => Dirpath(dir))
+# Directory keys end at a path separator so "plugin" and "plugin-old" differ.
+def CleanPathKey(path: string): string
+  final full = simplify(ModifyFilename(path, ':p'))
+  final key = is_win ? tolower(substitute(full, '\\', '/', 'g')) : full
+  return substitute(key, '/\+$', '', '') .. '/'
+enddef
+
+def ProtectDirectory(keep: dict<bool>, root: string, path: string)
+  if stridx(root, path) == 0
+    keep[''] = true
+  elseif stridx(path, root) == 0
+    var relative = strpart(path, strlen(root))
+    keep[relative] = true
+    while !empty(relative)
+      relative = substitute(relative, '[^/]\+/$', '', '')
+      if has_key(keep, relative)
+        break
+      endif
+      keep[relative] = false
+    endwhile
+  endif
+enddef
+
+def UnusedDirectories(home: string, directories: list<string>): list<string>
+  final root = CleanPathKey(home)
+  final resolved_root = CleanPathKey(resolve(home))
+  # True protects the whole subtree. False marks a parent to search for siblings.
+  final keep: dict<bool> = {}
+  for dir in directories
+    ProtectDirectory(keep, root, CleanPathKey(dir))
+    ProtectDirectory(keep, resolved_root, CleanPathKey(resolve(dir)))
+  endfor
+  final unused: list<string> = []
+  if get(keep, '', false)
+    return unused
+  endif
+
+  final pending = [home]
+  while !empty(pending)
+    final parent = remove(pending, -1)
+    final parent_key = CleanPathKey(parent)
+    for child in Glob(parent, '*')
+      if !isdirectory(child)
+        continue
+      endif
+      final key = CleanPathKey(child)
+      # A path component containing a glob character can also match a sibling.
+      if CleanPathKey(ModifyFilename(child, ':h')) != parent_key
+        continue
+      endif
+      final relative = strpart(key, strlen(root))
+      if !has_key(keep, relative)
+        add(unused, Dirpath(child))
+      elseif !keep[relative] && getftype(child) == 'dir'
+          && (!is_win || CleanPathKey(resolve(child)) == key)
+        add(pending, child)
+      endif
+    endfor
+  endwhile
+  return sort(unused)
 enddef
 
 def ProgressBar(line: number, bar: string, total: number)
@@ -1657,14 +1725,12 @@ def FormatMessage(bullet: string, name: string, message: string): list<string>
 enddef
 
 def WithCd(cmd: string, dir: string, shell: string, for_batch: bool = true): string
-  var pwsh = IsPowershell(shell)
-  var cd = is_win && !pwsh ? 'cd /d' : 'cd'
-  var sep = pwsh ? ';' : '&&'
-  var pwsh_block_required = pwsh && !has('patch-9.2.6')
-  var start = pwsh_block_required ? '& { ' : ''
-  var end = pwsh_block_required ? ' }' : ''
-
-  return printf('%s%s %s %s %s%s', start, cd, ShellEscape(dir, shell, for_batch), sep, cmd, end)
+  if IsPowershell(shell)
+    final literal_dir = "'" .. substitute(dir, "'", "''", 'g') .. "'"
+    return '& { Set-Location -LiteralPath ' .. literal_dir .. ' -ErrorAction Stop; ' .. cmd .. ' }'
+  endif
+  final cd = is_win ? 'cd /d' : 'cd'
+  return cd .. ' ' .. ShellEscape(dir, shell, for_batch) .. ' && ' .. cmd
 enddef
 
 # Windows and Unix GUI builds can run Git directly with a per-process cwd.
@@ -1706,6 +1772,8 @@ else
     try
       var command = join(mapnew(argv, (_, arg) => ShellEscape(arg, &shell, false)))
       if IsPowershell(&shell)
+        # Out-File succeeds even if Git fails. Return the native process status.
+        &shellredir ..= '; if ($null -eq $LASTEXITCODE) { exit 127 }; exit $LASTEXITCODE'
         command = '& ' .. command
       endif
       if !empty(directory)
@@ -1732,10 +1800,13 @@ enddef
 def GitValidate(spec: dict<any>, check_branch: number): list<any>
   var err = ''
   if isdirectory(spec.dir)
-    var result = [GitLocalBranch(spec.dir), GitOriginUrl(spec.dir)]
-    var remote = result[-1]
+    final remote = GitOriginUrl(spec.dir)
     if empty(remote)
-      err = join([remote, 'PlugClean required.'], "\n")
+      if shell_error != 0 && shell_error != 1
+          && (isdirectory(spec.dir .. '/.git') || filereadable(spec.dir .. '/.git'))
+        return ['Unable to read the Git configuration. Check the checkout with git status.', 0]
+      endif
+      err = "Missing origin URL.\nPlugClean required."
     elseif !CompareGitUri(remote, spec.uri)
       err = join(['Invalid URI: ' .. remote,
                         'Expected:    ' .. spec.uri,
@@ -1745,7 +1816,7 @@ def GitValidate(spec: dict<any>, check_branch: number): list<any>
     elseif has_key(spec, 'commit')
       var sha = GitRevision(spec.dir)
       if empty(sha)
-        err = join(add(result, 'PlugClean required.'), "\n")
+        err = "Unable to resolve HEAD.\nPlugClean required."
       elseif !HashMatch(sha, spec.commit)
         err = join([printf('Invalid HEAD (expected: %s, actual: %s)',
                                   spec.commit[: 6], sha[: 6]),
@@ -1758,7 +1829,7 @@ def GitValidate(spec: dict<any>, check_branch: number): list<any>
                   (empty(tag) ? 'N/A' : tag), spec.tag)
       endif
     elseif check_branch
-      var current_branch = result[0]
+      final current_branch = GitLocalBranch(spec.dir)
       var origin_branch = GitOriginBranch(spec)
       if origin_branch !=# current_branch
         err = printf('Invalid branch: %s (expected: %s). Try PlugUpdate.',
@@ -1794,15 +1865,12 @@ def GitValidate(spec: dict<any>, check_branch: number): list<any>
 enddef
 
 def RemoveDirectory(dir: string): string
-  if isdirectory(dir)
-    if is_win
-      return delete(substitute(dir, '[/\\]\+$', '', ''), 'rf') == 0
-        ? ''
-        : 'Unable to remove directory: ' .. dir
-    endif
-    return System(['rm', '-rf', '--', dir])
+  if !isdirectory(dir)
+    return ''
   endif
-  return ''
+  # Strip the directory separator so deleting a link operates on the link itself.
+  final path = substitute(dir, is_win ? '[/\\]\+$' : '/\+$', '', '')
+  return delete(path, 'rf') == 0 ? '' : 'Unable to remove directory: ' .. dir
 enddef
 
 def Clean(force: number)
@@ -1831,28 +1899,13 @@ def Clean(force: number)
     redraw
   endfor
 
-  var allowed: dict<number> = {}
-  for dir in dirs
-    allowed[Dirpath(ModifyFilename(dir, ':h:h'))] = 1
-    allowed[dir] = 1
-    for child in GlobDir(dir)
-      allowed[child] = 1
-    endfor
-  endfor
-
-  var todo: list<string> = []
-  var found = sort(GlobDir(g:plug_home))
-  while !empty(found)
-    var f = remove(found, 0)
-    if !has_key(allowed, f) && isdirectory(f)
-      add(todo, f)
-      append(line('$'), '- ' .. f)
-      if has_key(errs, f)
-        append(line('$'), '    ' .. errs[f])
-      endif
-      found = filter(found, (_, dir) => stridx(dir, f) != 0)
+  final todo = UnusedDirectories(g:plug_home, dirs)
+  for dir in todo
+    append(line('$'), '- ' .. dir)
+    if has_key(errs, dir)
+      append(line('$'), '    ' .. errs[dir])
     endif
-  endwhile
+  endfor
 
   cursor(min([4, line('$')]), 1)
   redraw
@@ -2121,12 +2174,26 @@ def PreviewCommit()
 
   if !IsPreviewWindowOpen()
     execute get(g:, 'plug_pwindow', 'vertical rightbelow new')
-    execute 'e' title
   else
-    execute 'pedit' title
     wincmd P
   endif
-  setlocal previewwindow filetype=git buftype=nofile bufhidden=wipe nobuflisted modifiable
+
+  if !get(b:, 'plug_diff_preview', false)
+    # A borrowed preview can contain unsaved text, even with bufhidden=wipe.
+    final previous = bufnr()
+    final previous_hidden = &l:bufhidden
+    try
+      setlocal bufhidden=hide
+      execute 'keepalt buffer' bufadd('')
+    finally
+      setbufvar(previous, '&bufhidden', previous_hidden)
+    endtry
+    b:plug_diff_preview = true
+    setlocal previewwindow buftype=nofile bufhidden=wipe nobuflisted noswapfile
+    setlocal filetype=git
+  endif
+  AssignName('[PlugDiff] ' .. title)
+  setlocal modifiable
   try
     final lines = split(System(command, g:plugs[name].dir), '\r\?\n', true)
     if len(lines) > 1 && empty(lines[-1])
@@ -2254,27 +2321,51 @@ def Revert()
   echo 'Reverted'
 enddef
 
+export def Restore(pins: dict<string>)
+  if !exists('g:plugs')
+    Err('Call Begin() before Restore().')
+    return
+  endif
+  final names = filter(keys(pins), (_, name) => has_key(g:plugs, name) && IsManaged(name))
+  for name in names
+    if pins[name] !~ '^\x\{4,64}$'
+      throw $'vim9-plug: Invalid commit ID for {name}: {pins[name]}'
+    endif
+  endfor
+  if empty(names)
+    return
+  endif
+  for name in names
+    g:plugs[name].commit = tolower(pins[name])
+  endfor
+  UpdatePlugins(1, 1, names, has('vim_starting'))
+enddef
+
 def Snapshot(force: number, ...args: list<string>)
   Prepare()
   setfiletype vim
-  append(0, ['vim9script',
-                    '# Generated by vim9-plug',
-                    '# ' .. strftime('%c'),
-                    '# Source this file after declaring plugins.',
-                    '', '', 'PlugUpdate!'])
-  :1
-  var anchor = line('$') - 3
-  var names = sort(keys(filter(copy(g:plugs),
-            (_, spec) => has_key(spec, 'uri') && isdirectory(spec.dir))))
-  for name in reverse(names)
-    var sha = has_key(g:plugs[name], 'commit') ? g:plugs[name].commit : GitRevision(g:plugs[name].dir)
-    if !empty(sha)
-      final key = string(name)
-      append(anchor, [printf('if has_key(g:plugs, %s)', key),
-        printf('  g:plugs[%s].commit = %s', key, string(sha)), 'endif'])
-      redraw
+  var lines = [
+    'vim9script',
+    '# Generated by vim9-plug',
+    '# ' .. strftime('%c'),
+    '# Source this file after declaring plugins.',
+    '',
+    "import autoload 'plug.vim' as plug",
+    '',
+    'plug.Restore({',
+  ]
+  for name in sort(keys(g:plugs))
+    final spec = g:plugs[name]
+    if IsManaged(name) && isdirectory(spec.dir)
+      final revision = GitRevision(spec.dir)
+      if !empty(revision)
+        add(lines, printf('  %s: %s,', string(name), string(revision)))
+      endif
     endif
   endfor
+  extend(lines, ['})', ''])
+  setline(1, lines)
+  :1
 
   if len(args) > 0
     var fn = ExpandFilename(args[0])
@@ -2293,8 +2384,8 @@ def SplitRtp(): list<string>
 enddef
 
 plug_file = resolve(ModifyFilename(expand('<sfile>:p'), ':p'))
-first_rtp = EscapeRuntimePath(get(SplitRtp(), 0, ''))
-last_rtp = EscapeRuntimePath(get(SplitRtp(), -1, ''))
+first_rtp = get(SplitRtp(), 0, '')
+last_rtp = get(SplitRtp(), -1, '')
 
 if exists('g:plugs')
   g:plugs_order = get(g:, 'plugs_order', keys(g:plugs))

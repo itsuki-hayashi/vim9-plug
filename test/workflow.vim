@@ -48,6 +48,13 @@ assert_false(plug.Load(['lazy']))
 assert_equal(['eager', 'after eager', 'lazy'], g:load_order)
 add(g:observed, string(g:load_order))
 
+if !exists('g:vim9_plug_test_upstream')
+  PlugStatus
+  final initial_status = getline(1, '$')
+  normal R
+  assert_equal(initial_status, getline(1, '$'))
+endif
+
 PlugInstall --sync 2
 assert_true(isdirectory(g:plugs.managed.dir .. '/.git'), getline(1, '$')->join("\n"))
 assert_true(filereadable(g:plugs.managed.dir .. '/vendor/submodule/.git'),
@@ -75,12 +82,40 @@ PlugDiff
 assert_match('1 plugin(s) updated', getline(1))
 assert_match('Second version', join(getline(1, '$'), "\n"))
 search('Second version')
+var same_name = -1
+if !exists('g:vim9_plug_test_upstream')
+  execute 'lcd' fnameescape($VIM9_PLUG_TEST_ROOT)
+  same_name = bufadd(matchstr(getline('.'), '\x\{7,}'))
+  bufload(same_name)
+  setbufline(same_name, 1, 'Unsaved file with the same name as the commit')
+endif
 normal o
 var previews = filter(getwininfo(), (_, window) => !empty(getwinvar(window.winid, '&previewwindow')))
 assert_equal(1, len(previews))
 if !empty(previews)
   assert_match('Second version', join(getbufline(previews[0].bufnr, 1, '$'), "\n"))
   pclose
+endif
+if same_name >= 0
+  assert_equal(['Unsaved file with the same name as the commit'], getbufline(same_name, 1, '$'))
+  assert_equal('', getbufvar(same_name, '&buftype'))
+  assert_true(getbufvar(same_name, '&modified'))
+
+  execute 'pedit' fnameescape($VIM9_PLUG_TEST_ROOT .. '/other-preview')
+  wincmd P
+  final previous_preview = bufnr()
+  setlocal bufhidden=wipe
+  setline(1, 'Unsaved text in an existing preview')
+  wincmd p
+  normal o
+  wincmd P
+  assert_notequal(previous_preview, bufnr())
+  assert_match('Second version', join(getline(1, '$'), "\n"))
+  wincmd p
+  pclose
+  assert_equal(['Unsaved text in an existing preview'], getbufline(previous_preview, 1, '$'))
+  assert_equal('wipe', getbufvar(previous_preview, '&bufhidden'))
+  assert_true(getbufvar(previous_preview, '&modified'))
 endif
 
 var snapshot = $VIM9_PLUG_TEST_ROOT .. '/saved snapshot.vim'
@@ -91,7 +126,7 @@ if exists('g:vim9_plug_test_upstream')
   assert_match('silent! let g:plugs', join(snapshot_text, "\n"))
 else
   assert_equal('vim9script', snapshot_text[0])
-  assert_match('g:plugs\[', join(snapshot_text, "\n"))
+  assert_match('plug\.Restore(', join(snapshot_text, "\n"))
 endif
 add(g:observed, string(getline('$')))
 PlugDiff
@@ -107,6 +142,41 @@ PlugClean!
 assert_true(isdirectory(g:plugs.managed.dir))
 assert_false(isdirectory(stale))
 assert_match('Removed 1 directories', join(getline(1, '$'), "\n"))
+
+if !exists('g:vim9_plug_test_upstream')
+  final managed_dir = g:plugs.managed.dir
+  final tagged_dir = g:plugs.tagged.dir
+  final frozen_dir = g:plugs.frozen.dir
+  final pins_file = $VIM9_PLUG_TEST_ROOT .. '/pinned.vim'
+  plug.Begin()
+  plug.Add($VIM9_PLUG_TEST_REMOTE, {as: '--sync', dir: managed_dir, frozen: 1,
+    commit: $VIM9_PLUG_TEST_FIRST_SHA})
+  plug.Add($VIM9_PLUG_TEST_REMOTE, {as: "O'Brien", dir: tagged_dir})
+  plug.Add($VIM9_PLUG_TEST_REMOTE, {as: 'removed', dir: frozen_dir})
+  plug.End()
+  execute 'PlugSnapshot!' fnameescape(pins_file)
+  Git(managed_dir, 'checkout', '--detach', $VIM9_PLUG_TEST_FIRST_SHA)
+
+  plug.Begin()
+  plug.Add($VIM9_PLUG_TEST_REMOTE, {as: '--sync', dir: managed_dir, frozen: 1})
+  plug.Add($VIM9_PLUG_TEST_REMOTE, {as: 'added later'})
+  plug.Add($VIM9_PLUG_TEST_LOCAL, {as: "O'Brien"})
+  plug.End()
+  execute 'source' fnameescape(pins_file)
+  assert_equal($VIM9_PLUG_TEST_SECOND_SHA, Git(managed_dir, 'rev-parse', 'HEAD'))
+  assert_equal($VIM9_PLUG_TEST_SECOND_SHA, g:plugs['--sync'].commit)
+  assert_false(isdirectory(g:plugs['added later'].dir))
+  assert_false(has_key(g:plugs["O'Brien"], 'commit'))
+
+  plug.Begin()
+  plug.Add($VIM9_PLUG_TEST_REMOTE, {as: 'added later'})
+  plug.End()
+  final previous_buffer = bufnr()
+  execute 'source' fnameescape(pins_file)
+  assert_equal(previous_buffer, bufnr())
+  assert_false(isdirectory(g:plugs['added later'].dir))
+  assert_false(has_key(g:plugs['added later'], 'commit'))
+endif
 
 assert_true(plug.Begin())
 plug.Add($VIM9_PLUG_TEST_LOCAL, {'as': 'eager'})

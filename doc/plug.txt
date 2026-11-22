@@ -52,6 +52,15 @@ plug.Load(names: list<string>): bool
                 Load one or more named plugins, e.g. plug.Load(['one']).
                 Returns true if a plugin was loaded.
 
+                                                              *plug.Restore()*
+plug.Restore(pins: dict<string>)
+                Pin each named, currently managed plugin to a Git commit ID
+                and force an update of those plugins, including frozen ones.
+                Use a full or abbreviated hexadecimal ID (at least 4 digits).
+                An invalid ID for a managed plugin throws before applying
+                any pins. Unknown and locally managed names are skipped.
+                An empty selection performs no update. See |:PlugSnapshot|.
+
                                                             *plug.Helptags()*
 plug.Helptags(): bool
                 Generate help tags for declared plugin directories.
@@ -96,8 +105,10 @@ COMMANDS                                                       *plug-commands*
                 updates. Vim jobs and channels enable parallel operation.
 
                                                                   *:PlugClean*
-:PlugClean[!]   Find and remove unused directories under the plugin home.
-                A bang skips the confirmation prompt.
+:PlugClean[!]   List unused directories under the plugin home and managed
+                checkouts that need reinstallation. A declared plugin can
+                be nested several directories deep. Review the list before
+                confirming deletion. A bang skips the confirmation prompt.
 
                                                      *:PlugStatus* *:PlugDiff*
 :PlugStatus     Show installation and loading status.
@@ -105,9 +116,10 @@ COMMANDS                                                       *plug-commands*
 
                                                                 *:PlugSnapshot*
 :PlugSnapshot[!] [file]
-                Generate a Vim9 script that restores current plugin
-                revisions. A bang allows replacing an existing file.
-                Source the generated script after declaring your plugins.
+                Record the checked-out revisions of installed Git plugins in a
+                Vim9 script. Source it after declaring your plugins to restore
+                the recorded plugins that are still managed, including frozen
+                ones. A bang allows replacing an existing file.
 
                                                                 *:PlugUpgrade*
 :PlugUpgrade    Upgrade the installed script from the vim9-plug repository.

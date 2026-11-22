@@ -117,6 +117,26 @@ def run(vim, source, directory, scenario="workflow", cmd_shell=False):
             "VIM9_PLUG_TEST_GOOD_URL": good.as_uri(),
             "VIM9_PLUG_TEST_BAD_URL": bad.as_uri(),
         })
+    elif scenario == "git":
+        home = directory / "metadata plugins"
+        home.mkdir()
+        # Keep a literal space in the configured URL and a regex metacharacter
+        # in the branch name, next to a packed ref that differs by one byte.
+        uri = remote.as_uri().replace("upstream%20remote", "upstream remote")
+        git(remote, "remote", "add", "origin", uri)
+        git(remote, "update-ref", "refs/remotes/origin/main", "HEAD")
+        git(remote, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        git(remote, "branch", "m-in", "refs/fixtures/next")
+        git(remote, "checkout", "-b", "m.in")
+        git(remote, "update-ref", "refs/remotes/origin/m.in", "HEAD")
+        git(remote, "worktree", "add", str(home / "linked"), "main")
+        git(remote, "pack-refs", "--all")
+        env.update({
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "clone.defaultRemoteName",
+            "GIT_CONFIG_VALUE_0": "mirror",
+            "VIM9_PLUG_TEST_METADATA_URI": uri,
+        })
     elif scenario == "jobs" and os.name != "nt":
         # A controlled clone that creates its destination and waits to be stopped.
         git_shim = directory / "bin/git"
@@ -184,9 +204,10 @@ def main():
             actual = run(args.vim, PORT, directory / "default shell")
             compare_workflows(expected, actual, "port with the default Windows shell")
         run(args.vim, PORT, directory / "vim9 caller", "vim9")
+        run(args.vim, PORT, directory / "git metadata", "git")
         run(args.vim, PORT, directory / "self upgrade", "upgrade")
         jobs = run(args.vim, PORT, directory / "async jobs", "jobs")
-    print("Vim9 compile, workflow parity, Vim9 caller, and self-upgrade passed.")
+    print("Vim9 compile, workflow parity, native caller, Git metadata, and self-upgrade passed.")
     print(jobs.strip())
 
 
