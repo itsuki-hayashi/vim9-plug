@@ -158,38 +158,37 @@ if !exists('g:vim9_plug_test_upstream')
 endif
 
 if !exists('g:vim9_plug_test_upstream')
-  final managed_dir = g:plugs.managed.dir
-  final tagged_dir = g:plugs.tagged.dir
-  final frozen_dir = g:plugs.frozen.dir
+  final managed_dir = plugin_home .. '/pack/vim9-plug/opt/--sync'
+  Git(plugin_home, 'clone', '--origin', 'origin', $VIM9_PLUG_TEST_REMOTE, managed_dir)
   final pins_file = $VIM9_PLUG_TEST_ROOT .. '/pinned.vim'
   plug.Begin()
-  plug.Add($VIM9_PLUG_TEST_REMOTE, {as: '--sync', dir: managed_dir, frozen: 1,
+  plug.Add($VIM9_PLUG_TEST_REMOTE, {as: '--sync', frozen: 1,
     commit: $VIM9_PLUG_TEST_FIRST_SHA})
-  plug.Add($VIM9_PLUG_TEST_REMOTE, {as: "O'Brien", dir: tagged_dir})
-  plug.Add($VIM9_PLUG_TEST_REMOTE, {as: 'removed', dir: frozen_dir})
+  plug.Add($VIM9_PLUG_TEST_REMOTE, {as: 'tagged'})
+  plug.Add($VIM9_PLUG_TEST_REMOTE, {as: 'frozen'})
   plug.End()
   execute 'PlugSnapshot!' fnameescape(pins_file)
   Git(managed_dir, 'checkout', '--detach', $VIM9_PLUG_TEST_FIRST_SHA)
 
   plug.Begin()
-  plug.Add($VIM9_PLUG_TEST_REMOTE, {as: '--sync', dir: managed_dir, frozen: 1})
-  plug.Add($VIM9_PLUG_TEST_REMOTE, {as: 'added later'})
-  plug.Add($VIM9_PLUG_TEST_LOCAL, {as: "O'Brien"})
+  plug.Add($VIM9_PLUG_TEST_REMOTE, {as: '--sync', frozen: 1})
+  plug.Add($VIM9_PLUG_TEST_REMOTE, {as: 'added-later'})
+  plug.Add($VIM9_PLUG_TEST_LOCAL, {as: 'tagged'})
   plug.End()
   execute 'source' fnameescape(pins_file)
   assert_equal($VIM9_PLUG_TEST_SECOND_SHA, Git(managed_dir, 'rev-parse', 'HEAD'))
-  assert_equal($VIM9_PLUG_TEST_SECOND_SHA, g:plugs['--sync'].commit)
-  assert_false(isdirectory(g:plugs['added later'].dir))
-  assert_false(has_key(g:plugs["O'Brien"], 'commit'))
+  assert_equal($VIM9_PLUG_TEST_SECOND_SHA, get(g:plugs['--sync'], 'commit', ''))
+  assert_false(isdirectory(g:plugs['added-later'].dir))
+  assert_false(has_key(g:plugs.tagged, 'commit'))
 
   plug.Begin()
-  plug.Add($VIM9_PLUG_TEST_REMOTE, {as: 'added later'})
+  plug.Add($VIM9_PLUG_TEST_REMOTE, {as: 'added-later'})
   plug.End()
   final previous_buffer = bufnr()
   execute 'source' fnameescape(pins_file)
   assert_equal(previous_buffer, bufnr())
-  assert_false(isdirectory(g:plugs['added later'].dir))
-  assert_false(has_key(g:plugs['added later'], 'commit'))
+  assert_false(isdirectory(g:plugs['added-later'].dir))
+  assert_false(has_key(g:plugs['added-later'], 'commit'))
 endif
 
 assert_true(plug.Begin())

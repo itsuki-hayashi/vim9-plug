@@ -42,10 +42,12 @@ var plug_buf = exists('plug_buf') ? plug_buf : -1
 var shell_error = 0
 var codepage = 0
 var git_version: list<number> = []
-var first_rtp = ''
-var last_rtp = ''
 var managed_rtp: dict<bool> = exists('managed_rtp') ? managed_rtp : {}
-var package_rtp: dict<bool> = exists('package_rtp') ? package_rtp : {}
+if exists('package_rtp')
+  # Preserve ownership when :PlugUpgrade replaces the script in this session.
+  extend(managed_rtp, package_rtp)
+  package_rtp = {}
+endif
 var managed_packpath = exists('managed_packpath') ? managed_packpath : ''
 var clean_count = 0
 var update_state: dict<any> = {}
@@ -77,7 +79,13 @@ def Dirpath(path: string): string
 enddef
 
 def IsLocalPlug(repo: string): bool
-  return is_win ? repo =~? '^[a-z]:\|^[%~]' : repo[0] =~ '[/$~]'
+  return repo =~ '^\%(\.\.\?[/\\]\|[/~$]\)'
+    || is_win && repo =~? '^\%([a-z]:\|[%\\]\)'
+enddef
+
+def InvalidPackageHome(home: string): bool
+  # Vim searches package paths as patterns and inserts them without comma escaping.
+  return home =~ '[][,?*{}$`\r\n]' || !is_win && stridx(home, '\') >= 0
 enddef
 
 # Numeric strings are valid in configuration flags.
@@ -155,24 +163,32 @@ export def Begin(directory: string = ''): bool
   var home: string
   final first_entry = get(SplitPath(&rtp), 0, '')
   if !empty(directory)
-    home = Path(ModifyFilename(ExpandFilename(directory), ':p'))
+    if directory =~ '[][,?*{}`\r\n]'
+      Err('Invalid plug home for Vim packages: ' .. directory)
+      return false
+    endif
+    home = ExpandFilename(directory)
   elseif exists('g:plug_home')
-    home = Path(g:plug_home)
+    home = g:plug_home
   elseif !empty(first_entry)
-    home = Path(RuntimeDirectory(first_entry) .. '/plugged')
+    home = RuntimeDirectory(first_entry) .. '/plugged'
   else
     Err('Unable to determine plug home. Pass a directory to Begin().')
     return false
   endif
-  final standard_plugin = Path(RuntimeDirectory(first_rtp) .. '/plugin')
-  final absolute_home = Path(ModifyFilename(home, ':p'))
-  if !empty(first_rtp) && (is_win ? absolute_home ==? standard_plugin : absolute_home == standard_plugin)
+  final absolute_home = ModifyFilename(home, ':p')
+  if InvalidPackageHome(absolute_home)
+    Err('Invalid plug home for Vim packages: ' .. absolute_home)
+    return false
+  endif
+  if !empty(first_entry) && CleanPathKey(absolute_home)
+      == CleanPathKey(RuntimeDirectory(first_entry) .. '/plugin')
     Err('Invalid plug home. ' .. home .. ' is a standard Vim runtime path and is not allowed.')
     return false
   endif
 
   JobAbort(false)
-  g:plug_home = absolute_home
+  g:plug_home = Path(absolute_home)
   g:plugs = {}
   g:plugs_order = []
   ClearTriggers()
@@ -230,8 +246,8 @@ def Lazy(plug: dict<any>, opt: string): bool
   return has_key(plug, opt) &&
             (empty(ToA(plug[opt]))         ||
             !isdirectory(plug.dir)             ||
-            len(Glob(PluginRuntimePath(plug), 'plugin')) ||
-            len(Glob(PluginRuntimePath(plug), 'after/plugin')))
+            len(Glob(plug.dir, 'plugin')) ||
+            len(Glob(plug.dir, 'after/plugin')))
 enddef
 
 export def End()
@@ -241,12 +257,6 @@ export def End()
   endif
 
   ClearTriggers()
-  if exists('#PlugLOD')
-    augroup PlugLOD
-      autocmd!
-    augroup END
-    augroup! PlugLOD
-  endif
   var lod = { 'ft': {}, 'map': {}, 'cmd': {} }
 
   if get(g:, 'did_load_filetypes', 0)
@@ -288,7 +298,7 @@ export def End()
       var types = ToA(plug.for)
       if !empty(types)
         augroup filetypedetect
-        Source(PluginRuntimePath(plug), 'ftdetect/**/*.vim', 'after/ftdetect/**/*.vim')
+        Source(plug.dir, 'ftdetect/**/*.vim', 'after/ftdetect/**/*.vim')
         augroup END
       endif
       for type in types
@@ -320,8 +330,11 @@ export def End()
     augroup END
   endfor
 
-  RegisterRuntimePaths()
-  filetype plugin indent on
+  try
+    RegisterRuntimePaths()
+  finally
+    filetype plugin indent on
+  endtry
   if has('vim_starting')
     if has('syntax') && !exists('g:syntax_on')
       syntax enable
@@ -335,13 +348,13 @@ def LoadedNames(): list<string>
   return filter(copy(g:plugs_order), (_, name) => !!get(loaded, name, 0))
 enddef
 
-def LoadPlugin(spec: dict<any>)
-  Source(PluginRuntimePath(spec), 'plugin/**/*.vim', 'after/plugin/**/*.vim')
+def LoadPlugin(root: string)
+  Source(root, 'plugin/**/*.vim', 'after/plugin/**/*.vim')
 enddef
 
 def ReloadPlugins()
   for name in LoadedNames()
-    LoadPlugin(g:plugs[name])
+    LoadPlugin(g:plugs[name].dir)
   endfor
 enddef
 
@@ -373,10 +386,6 @@ enddef
 def ProgressOpt(base: bool): string
   return base && !is_win &&
             GitVersionRequirement(1, 7, 1) ? '--progress' : ''
-enddef
-
-def PluginRuntimePath(spec: dict<any>): string
-  return Path(spec.dir .. get(spec, 'rtp', ''))
 enddef
 
   # Copied from fzf
@@ -444,113 +453,94 @@ def RegisterPackpath()
   endif
 enddef
 
-def NativePackage(root: string): string
-  final name = ModifyFilename(root, ':t')
-  final key = CleanPathKey(root)
-  # :packadd takes a name pattern and inserts the path without escaping commas.
-  if name !~ '^[-a-zA-Z0-9_.]\+$' || name == '.' || name == '..'
-      || g:plug_home =~ '[][,?*{}$]'
-      || key != CleanPathKey(g:plug_home .. package_subdir .. '/' .. name)
-    return ''
-  endif
+def PackageDir(name: string): string
+  return Dirpath(g:plug_home .. package_subdir .. '/' .. name)
+enddef
+
+def ValidPackageName(name: string): bool
+  return name =~ '^[-a-zA-Z0-9_.]\+$' && name != '.' && name != '..'
+enddef
+
+def PackageName(dir: string): string
+  final name = ModifyFilename(Path(dir), ':t')
+  return ValidPackageName(name) && CleanPathKey(dir) == CleanPathKey(PackageDir(name)) ? name : ''
+enddef
+
+def CheckPackageCollision(name: string)
   # :packadd searches every group and can also match start packages in the vimrc.
   final matches = globpath(g:plug_home, 'pack/*/opt/' .. name, true, true)
     + globpath(g:plug_home, 'pack/*/start/' .. name, true, true)
-  filter(matches, (_, path) => isdirectory(path))
-  return len(matches) == 1 && CleanPathKey(matches[0]) == key ? name : ''
+  final target = CleanPathKey(PackageDir(name))
+  for path in matches
+    if isdirectory(path) && CleanPathKey(path) != target
+      throw $'vim9-plug: Package name "{name}" also matches {path}'
+    endif
+  endfor
 enddef
 
-def RegisterPackage(name: string): bool
+def RegisterPackage(name: string)
   final before = SplitPath(&rtp)
   final saved_packpath = &packpath
   try
     noautocmd &packpath = g:plug_home
     noautocmd execute 'packadd!' name
-  catch /^Vim\%((\a\+)\)\=:E919:/
-    return false
   finally
     noautocmd &packpath = saved_packpath
   endtry
   for entry in SplitPath(&rtp)
     if index(before, entry) < 0
-      package_rtp[entry] = true
+      managed_rtp[entry] = true
     endif
   endfor
-  return true
 enddef
 
-def RegisterRuntimePaths()
+def RegisterRuntimePaths(additional: list<string> = [])
   RegisterPackpath()
-  var paths: list<string> = []
-  for name in LoadedNames()
-    final root = PluginRuntimePath(g:plugs[name])
-    if isdirectory(root)
-      add(paths, root)
-    endif
-  endfor
-  var active: dict<bool> = {}
-  for root in paths
-    final key = CleanPathKey(root)
-    active[key] = true
-    if isdirectory(root .. '/after')
-      active[key .. 'after/'] = true
+  final before = SplitPath(&rtp)
+  var present: dict<string> = {}
+  for entry in before
+    if !empty(entry)
+      present[CleanPathKey(RuntimeDirectory(entry))] = entry
     endif
   endfor
 
-  # Vim has no :packremove. Drop only package entries we added for old declarations.
-  final before = SplitPath(&rtp)
-  final kept = filter(copy(before), (_, entry) => !has_key(package_rtp, entry)
-    || has_key(active, CleanPathKey(RuntimeDirectory(entry))))
-  if before != kept
+  var keep: dict<bool> = {}
+  var pending: list<string> = []
+  for name in LoadedNames() + additional
+    final dir: string = g:plugs[name].dir
+    if !isdirectory(dir)
+      continue
+    endif
+    final key = CleanPathKey(dir)
+    final after = isdirectory(dir .. '/after')
+    final after_key = key .. 'after/'
+    final entry = get(present, key, '')
+    # Vim adds after/ only when registering the package root for the first time.
+    if empty(entry) || (after && !has_key(present, after_key) && has_key(managed_rtp, entry))
+      final package = PackageName(dir)
+      if empty(package)
+        throw 'vim9-plug: Invalid native package directory: ' .. dir
+      endif
+      CheckPackageCollision(package)
+      add(pending, package)
+    else
+      keep[key] = true
+    endif
+    if after
+      keep[after_key] = true
+    endif
+  endfor
+
+  # Vim has no :packremove. Only drop entries owned by vim9-plug.
+  final kept = filter(copy(before), (_, entry) => !has_key(managed_rtp, entry)
+    || has_key(keep, CleanPathKey(RuntimeDirectory(entry))))
+  filter(managed_rtp, (entry, _) => index(kept, entry) >= 0)
+  if kept != before
     &rtp = join(kept, ',')
   endif
-  filter(package_rtp, (entry, _) => index(kept, entry) >= 0)
-
-  var present: dict<bool> = {}
-  for entry in kept
-    if !has_key(managed_rtp, entry) && !empty(entry)
-      present[CleanPathKey(RuntimeDirectory(entry))] = true
-    endif
+  for package in pending
+    RegisterPackage(package)
   endfor
-  var roots: list<string> = []
-  var afters: list<string> = []
-  for root in paths
-    final key = CleanPathKey(root)
-    final after = Path(root .. '/after')
-    final after_key = key .. 'after/'
-    if !has_key(present, key)
-      final name = NativePackage(root)
-      if !empty(name) && RegisterPackage(name)
-        present[after_key] = true
-      else
-        add(roots, escape(root, ','))
-      endif
-      present[key] = true
-    endif
-    if isdirectory(after) && !has_key(present, after_key)
-      add(afters, escape(after, ','))
-      present[after_key] = true
-    endif
-  endfor
-
-  if empty(roots) && empty(afters) && empty(managed_rtp)
-    return
-  endif
-  # Flat checkouts, explicit runtime subdirectories and other non-package paths.
-  final current = SplitPath(&rtp)
-  final head = index(current, first_rtp) >= 0 && !empty(first_rtp) ? [first_rtp] : []
-  final tail = index(current, last_rtp) >= 0 && last_rtp != first_rtp
-      && CleanPathKey(RuntimeDirectory(last_rtp)) =~ '/after/$' ? [last_rtp] : []
-  final middle = filter(copy(current), (_, entry) => !has_key(managed_rtp, entry)
-    && index(head, entry) < 0 && index(tail, entry) < 0)
-  managed_rtp = {}
-  for entry in roots + afters
-    managed_rtp[entry] = true
-  endfor
-  final entries = head + roots + middle + afters + tail
-  if entries != current
-    &rtp = join(entries, ',')
-  endif
 enddef
 
 def Doautocmd(...args: list<string>)
@@ -565,7 +555,7 @@ def Dobufread(names: list<string>)
     return
   endif
   for name in names
-    var path = PluginRuntimePath(g:plugs[name])
+    final path: string = g:plugs[name].dir
     for dir in ['ftdetect', 'ftplugin', 'after/ftdetect', 'after/ftplugin']
       if isdirectory(path .. '/' .. dir)
         if exists('#BufRead')
@@ -591,7 +581,7 @@ export def Load(names: list<string>): bool
   var unloaded = filter(copy(names), (_, name) => !get(loaded, name, 0))
   if !empty(unloaded)
     for name in unloaded
-      Lod([name], ['ftdetect', 'after/ftdetect', 'plugin', 'after/plugin'])
+      Lod([name])
     endfor
     Dobufread(unloaded)
     return true
@@ -655,33 +645,41 @@ def ClearTriggers()
   for name in keys(triggers)
     RemoveTriggers(name)
   endfor
+  if exists('#PlugLOD')
+    autocmd! PlugLOD
+    augroup! PlugLOD
+  endif
 enddef
 
-def Lod(names: list<string>, types: list<string>, ...args: list<string>): bool
+def Lod(names: list<string>, filetype: string = ''): bool
   var newly_loaded: list<string> = []
   for name in names
-    if get(loaded, name, 0)
-      continue
+    if !get(loaded, name, 0) && index(newly_loaded, name) < 0
+      add(newly_loaded, name)
     endif
-    RemoveTriggers(name)
-    loaded[name] = 1
-    add(newly_loaded, name)
   endfor
   if empty(newly_loaded)
     return false
   endif
-  RegisterRuntimePaths()
+  RegisterRuntimePaths(newly_loaded)
 
   for name in newly_loaded
-    var rtp = PluginRuntimePath(g:plugs[name])
-    for dir in types
-      Source(rtp, dir .. '/**/*.vim')
-    endfor
-    if !empty(args)
-      if !Source(rtp, args[0]) && !empty(Glob(rtp, args[1]))
-        execute 'runtime' args[0]
+    RemoveTriggers(name)
+    loaded[name] = 1
+  endfor
+  for name in newly_loaded
+    final root: string = g:plugs[name].dir
+    if empty(filetype)
+      Source(root, 'ftdetect/**/*.vim', 'after/ftdetect/**/*.vim')
+    endif
+    LoadPlugin(root)
+    if !empty(filetype)
+      final syntax = 'syntax/' .. filetype .. '.vim'
+      final after = 'after/' .. syntax
+      if !Source(root, syntax) && !empty(Glob(root, after))
+        execute 'runtime' syntax
       endif
-      Source(rtp, args[1])
+      Source(root, after)
     endif
     Doautocmd('User', name)
   endfor
@@ -689,8 +687,7 @@ def Lod(names: list<string>, types: list<string>, ...args: list<string>): bool
 enddef
 
 def LodFt(pat: string, names: list<string>)
-  var syn = 'syntax/' .. pat .. '.vim'
-  final changed = Lod(names, ['plugin', 'after/plugin'], syn, 'after/' .. syn)
+  final changed = Lod(names, pat)
   execute 'autocmd! PlugLOD FileType' pat
   if changed
     Doautocmd('filetypeplugin', 'FileType')
@@ -701,7 +698,7 @@ enddef
 # Triggers installed before an in-session upgrade omit the range count.
 def LodCmd(cmd: string, bang: string, l1: number, l2: number, args: string,
     mods: string, names: list<string>, range_count: number = l1 == l2 ? 0 : 2)
-  Lod(names, ['ftdetect', 'after/ftdetect', 'plugin', 'after/plugin'])
+  Lod(names)
   Dobufread(names)
   var address = ''
   if range_count == 1
@@ -713,7 +710,7 @@ def LodCmd(cmd: string, bang: string, l1: number, l2: number, args: string,
 enddef
 
 def LodMap(map: string, names: list<string>, with_prefix: bool, prefix: string)
-  Lod(names, ['ftdetect', 'after/ftdetect', 'plugin', 'after/plugin'])
+  Lod(names)
   Dobufread(names)
   var extra = ''
   while true
@@ -749,8 +746,28 @@ export def Add(repository: string, options: dict<any> = {})
 
   final repo = Trim(repository)
   final opts = ParseOptions(options)
-  final name = get(opts, 'as', ModifyFilename(repo, ':t:s?\.git$??'))
-  final spec = extend(InferProperties(name, repo), opts)
+  final local = IsLocalPlug(repo)
+  final location = local ? ExpandFilename(repo) : repo
+  final name = get(opts, 'as', ModifyFilename(location, local ? ':t' : ':t:s?\.git$??'))
+  if !ValidPackageName(name)
+    throw $'vim9-plug: Invalid package name "{name}". Supply a name using letters, digits, dots, underscores or hyphens.'
+  endif
+  final package = local ? PackageName(location) : name
+  if empty(package)
+    throw 'vim9-plug: Local plugins must use the native package layout: '
+      .. g:plug_home .. package_subdir .. '/<name>'
+  endif
+  CheckPackageCollision(package)
+  final dir = PackageDir(package)
+  for [other, spec] in items(g:plugs)
+    if other != name && CleanPathKey(spec.dir) == CleanPathKey(dir)
+      throw $'vim9-plug: Package "{package}" is already declared as "{other}".'
+    endif
+  endfor
+  final spec = extend({dir: dir}, opts)
+  if !local
+    spec.uri = GitUri(repo)
+  endif
   if !has_key(g:plugs, name)
     add(g:plugs_order, name)
   endif
@@ -760,7 +777,12 @@ enddef
 
 def ParseOptions(options: dict<any>): dict<any>
   const error_format = 'vim9-plug: Invalid "%s" option for Add() (expected %s)'
-  for key in ['branch', 'tag', 'commit', 'rtp', 'dir', 'as']
+  for key in ['dir', 'rtp']
+    if has_key(options, key)
+      throw $'vim9-plug: The "{key}" option was removed. Use a native Vim package directory.'
+    endif
+  endfor
+  for key in ['branch', 'tag', 'commit', 'as']
     if has_key(options, key)
         && (type(options[key]) != v:t_string || empty(options[key]))
       throw printf(error_format, key, 'a nonempty string')
@@ -782,33 +804,17 @@ def ParseOptions(options: dict<any>): dict<any>
       && (type(options.do) != v:t_string || empty(options.do))
     throw printf(error_format, 'do', 'a nonempty string or a function')
   endif
-  final opts = extend(copy(base_spec), options)
-  if has_key(opts, 'dir')
-    opts.dir = Dirpath(ExpandFilename(opts.dir))
-  endif
-  return opts
+  return extend(copy(base_spec), options)
 enddef
 
-def InferProperties(name: string, repo: string): dict<any>
-  var uri: string
-  if IsLocalPlug(repo)
-    return { 'dir': Dirpath(ExpandFilename(repo)) }
-  else
-    if repo =~ ':'
-      uri = repo
-    else
-      if repo !~ '/'
-        throw printf('Invalid argument: %s (implicit `vim-scripts'' expansion is deprecated)', repo)
-      endif
-      var fmt = get(g:, 'plug_url_format', 'https://git::@github.com/%s.git')
-      uri = printf(fmt, repo)
-    endif
-    final legacy = g:plug_home .. '/' .. name
-    final package = g:plug_home .. package_subdir .. '/' .. name
-    # A package named "pack" shares its old path with the package hierarchy.
-    final reuse = name ==? 'pack' ? !empty(getftype(legacy .. '/.git')) : isdirectory(legacy)
-    return {dir: Dirpath(!isdirectory(package) && reuse ? legacy : package), uri: uri}
+def GitUri(repo: string): string
+  if repo =~ ':'
+    return repo
   endif
+  if repo !~ '/'
+    throw printf('Invalid argument: %s (implicit `vim-scripts'' expansion is deprecated)', repo)
+  endif
+  return printf(get(g:, 'plug_url_format', 'https://git::@github.com/%s.git'), repo)
 enddef
 
 def Install(force: number, names: list<string>)
@@ -825,7 +831,7 @@ export def Helptags(): bool
     return false
   endif
   for spec in values(g:plugs)
-    var docd = join([PluginRuntimePath(spec), 'doc'], '/')
+    var docd = join([spec.dir, 'doc'], '/')
     if isdirectory(docd)
       silent! execute 'helptags' fnameescape(docd)
     endif
@@ -1092,7 +1098,7 @@ def RunHook(spec: dict<any>, info: dict<any>): string
   try
     final Hook = spec.do
     if type(Hook) == v:t_func
-      LoadPlugin(spec)
+      LoadPlugin(spec.dir)
       call(Hook, [info])
     elseif type(Hook) != v:t_string
       error = 'Invalid hook type'
@@ -1100,10 +1106,10 @@ def RunHook(spec: dict<any>, info: dict<any>): string
       error = Bang(Hook)
     else
       if !get(loaded, info.name, 0)
+        RegisterRuntimePaths([info.name])
         loaded[info.name] = 1
-        RegisterRuntimePaths()
       endif
-      LoadPlugin(spec)
+      LoadPlugin(spec.dir)
       execute Hook[1 :]
     endif
   catch
@@ -1747,59 +1753,28 @@ def CleanPathKey(path: string): string
   return substitute(key, '/\+$', '', '') .. '/'
 enddef
 
-def ProtectDirectory(keep: dict<bool>, root: string, path: string)
-  if stridx(root, path) == 0
-    keep[''] = true
-  elseif stridx(path, root) == 0
-    var relative = strpart(path, strlen(root))
-    keep[relative] = true
-    while !empty(relative)
-      relative = substitute(relative, '[^/]\+/$', '', '')
-      if has_key(keep, relative)
-        break
-      endif
-      keep[relative] = false
-    endwhile
+def UnusedPackages(directories: list<string>): list<string>
+  final home = g:plug_home .. package_subdir
+  if !isdirectory(home)
+      || CleanPathKey(resolve(home)) != CleanPathKey(resolve(g:plug_home) .. package_subdir)
+    return []
   endif
-enddef
-
-def UnusedDirectories(home: string, directories: list<string>): list<string>
-  final root = CleanPathKey(home)
-  final resolved_root = CleanPathKey(resolve(home))
-  # True protects the whole subtree. False marks a parent to search for siblings.
   final keep: dict<bool> = {}
   for dir in directories
-    ProtectDirectory(keep, root, CleanPathKey(dir))
-    ProtectDirectory(keep, resolved_root, CleanPathKey(resolve(dir)))
+    keep[CleanPathKey(dir)] = true
+    keep[CleanPathKey(resolve(dir))] = true
   endfor
   final unused: list<string> = []
-  if get(keep, '', false)
-    return unused
-  endif
-
-  final pending = [home]
-  while !empty(pending)
-    final parent = remove(pending, -1)
-    final parent_key = CleanPathKey(parent)
-    for child in Glob(parent, '*')
-      if !isdirectory(child)
-        continue
-      endif
-      final key = CleanPathKey(child)
-      # A path component containing a glob character can also match a sibling.
-      if CleanPathKey(ModifyFilename(child, ':h')) != parent_key
-        continue
-      endif
-      final relative = strpart(key, strlen(root))
-      if !has_key(keep, relative)
-        add(unused, Dirpath(child))
-      elseif !keep[relative] && getftype(child) == 'dir'
-          && (!is_win || CleanPathKey(resolve(child)) == key)
-        add(pending, child)
-      endif
-    endfor
-  endwhile
-  return sort(unused)
+  for name in readdir(home)
+    if name =~ '[\r\n]'
+      continue
+    endif
+    final dir = is_win ? PackageDir(name) : home .. '/' .. name .. '/'
+    if isdirectory(dir) && !has_key(keep, CleanPathKey(dir))
+      add(unused, dir)
+    endif
+  endfor
+  return unused
 enddef
 
 def ProgressBar(line: number, bar: string, total: number)
@@ -1978,7 +1953,7 @@ enddef
 
 def Clean(force: number)
   Prepare()
-  append(0, 'Searching for invalid plugins in ' .. g:plug_home)
+  append(0, 'Searching for invalid packages in ' .. g:plug_home .. package_subdir)
   append(1, '')
 
   # List of valid directories
@@ -2002,12 +1977,7 @@ def Clean(force: number)
     redraw
   endfor
 
-  # Other package groups can share this packpath root.
-  final todo = UnusedDirectories(g:plug_home, dirs + [g:plug_home .. '/pack'])
-  final package_home = g:plug_home .. package_subdir
-  if CleanPathKey(resolve(package_home)) == CleanPathKey(resolve(g:plug_home) .. package_subdir)
-    extend(todo, UnusedDirectories(package_home, dirs))
-  endif
+  final todo = UnusedPackages(dirs)
   for dir in todo
     append(line('$'), '- ' .. dir)
     if has_key(errs, dir)
@@ -2147,6 +2117,15 @@ def RollbackUpgrade(reason: string)
 enddef
 
 def UpgradeSpecs()
+  if InvalidPackageHome(g:plug_home) || !empty(filter(copy(g:plugs), (_, spec) =>
+      has_key(spec, 'rtp') || empty(PackageName(spec.dir))))
+    ClearTriggers()
+    g:plugs = {}
+    g:plugs_order = []
+    RegisterRuntimePaths()
+    Warn('echom', 'Reload your declarations using the native Vim package layout.')
+    return
+  endif
   for spec in values(g:plugs)
     spec.frozen = get(spec, 'frozen', 0)
   endfor
@@ -2363,9 +2342,6 @@ def Diff()
           add(cmd, '--no-show-signature')
         endif
         extend(cmd, ['--pretty=format:%x01%h%x01%d%x01%s%x01%cr', range])
-        if has_key(v, 'rtp')
-          extend(cmd, ['--', v.rtp])
-        endif
         var diff = SystemChomp(cmd, v.dir)
         if !empty(diff)
           var ref = has_key(v, 'tag') ? (' (tag: ' .. v.tag .. ')') : has_key(v, 'commit') ? (' ' .. v.commit) : ''
@@ -2488,12 +2464,10 @@ def Snapshot(force: number, ...args: list<string>)
 enddef
 
 def SplitPath(option: string): list<string>
-  return split(option, '\\\@<!,', true)
+  return empty(option) ? [] : split(option, '\\\@<!,', true)
 enddef
 
 plug_file = resolve(ModifyFilename(expand('<sfile>:p'), ':p'))
-first_rtp = get(SplitPath(&rtp), 0, '')
-last_rtp = get(SplitPath(&rtp), -1, '')
 
 if exists('g:plugs')
   g:plugs_order = get(g:, 'plugs_order', keys(g:plugs))

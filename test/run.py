@@ -22,8 +22,8 @@ def git(directory, *args):
     ).strip()
 
 
-def make_fixture(directory):
-    local = directory / "local eager plugin"
+def make_fixture(directory, local_root):
+    local = local_root / "eager"
     (local / "plugin").mkdir(parents=True)
     (local / "after/plugin").mkdir(parents=True)
     (local / "doc").mkdir()
@@ -34,7 +34,7 @@ def make_fixture(directory):
     (local / "doc/fixture.txt").write_text(
         "Local fixture *plug-test-fixture*\n", encoding="utf-8")
 
-    lazy = directory / "lazy plugin"
+    lazy = local_root / "lazy"
     (lazy / "plugin").mkdir(parents=True)
     (lazy / "plugin/lazy.vim").write_text(
         "command! -nargs=* -bang -range FixtureLazy "
@@ -97,7 +97,8 @@ def run(vim, source, directory, scenario="workflow", cmd_shell=False):
         with plug.open("a", encoding="utf-8", newline="\n") as staged:
             staged.write("\ndefcompile\n")
 
-    local, lazy, remote = make_fixture(directory)
+    local_root = directory / "plugin home/pack/vim9-plug/opt" if source == PORT else directory
+    local, lazy, remote = make_fixture(directory, local_root)
     env = os.environ.copy()
     env.update({
         "GIT_ALLOW_PROTOCOL": "file",
@@ -127,19 +128,20 @@ def run(vim, source, directory, scenario="workflow", cmd_shell=False):
         legacy.parent.mkdir()
         git(directory, "clone", remote.as_uri(), str(legacy))
     elif scenario == "git":
-        home = directory / "metadata plugins"
-        home.mkdir()
+        opt = directory / "metadata plugins/pack/vim9-plug/opt"
+        packed = opt / "packed"
+        shutil.copytree(remote, packed)
         # Keep a literal space in the configured URL and a regex metacharacter
         # in the branch name, next to a packed ref that differs by one byte.
         uri = remote.as_uri().replace("upstream%20remote", "upstream remote")
-        git(remote, "remote", "add", "origin", uri)
-        git(remote, "update-ref", "refs/remotes/origin/main", "HEAD")
-        git(remote, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
-        git(remote, "branch", "m-in", "refs/fixtures/next")
-        git(remote, "checkout", "-b", "m.in")
-        git(remote, "update-ref", "refs/remotes/origin/m.in", "HEAD")
-        git(remote, "worktree", "add", str(home / "linked"), "main")
-        git(remote, "pack-refs", "--all")
+        git(packed, "remote", "add", "origin", uri)
+        git(packed, "update-ref", "refs/remotes/origin/main", "HEAD")
+        git(packed, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        git(packed, "branch", "m-in", "refs/fixtures/next")
+        git(packed, "checkout", "-b", "m.in")
+        git(packed, "update-ref", "refs/remotes/origin/m.in", "HEAD")
+        git(packed, "worktree", "add", str(opt / "linked"), "main")
+        git(packed, "pack-refs", "--all")
         env.update({
             "GIT_CONFIG_COUNT": "1",
             "GIT_CONFIG_KEY_0": "clone.defaultRemoteName",

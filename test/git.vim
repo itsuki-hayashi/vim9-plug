@@ -5,9 +5,7 @@ execute 'set runtimepath^=' .. fnameescape($VIM9_PLUG_TEST_ROOT)
 import autoload 'plug.vim' as plug
 
 plug.Begin($VIM9_PLUG_TEST_ROOT .. '/metadata plugins')
-plug.Add($VIM9_PLUG_TEST_METADATA_URI, {
-  as: 'packed', dir: $VIM9_PLUG_TEST_GIT_REPO, branch: 'm.in',
-})
+plug.Add($VIM9_PLUG_TEST_METADATA_URI, {as: 'packed', branch: 'm.in'})
 plug.Add($VIM9_PLUG_TEST_METADATA_URI, {as: 'linked'})
 plug.End()
 

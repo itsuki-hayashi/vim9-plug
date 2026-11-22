@@ -38,9 +38,10 @@ plug.Begin(directory: string = ''): bool
                                                                  *plug.Add()*
 plug.Add(repository: string, options: dict<any> = {})
                 Register a Git repository or an externally managed local
-                plugin. A GitHub owner/repository shorthand uses
+                plugin in the native package layout. A GitHub shorthand uses
                 g:plug_url_format. Pass a dictionary for options. Invalid
-                declarations throw an exception. See |plug-options|.
+                declarations throw an exception. See |plug-options| and
+                |plug-packages|.
 
                                                                  *plug.End()*
 plug.End()      Register eager packages, set up lazy-loading triggers,
@@ -81,9 +82,8 @@ Options in a dictionary:
     branch      Select a branch.
     tag         Select a tag. A wildcard selects the latest matching tag.
     commit      Select a commit.
-    rtp         Plugin runtime directory relative to the repository root.
-    dir         Override the plugin's installation directory.
-    as          Set the name used in commands and g:plugs.
+    as          Set the name used in commands and g:plugs. For Git plugins,
+                this also sets the package directory name.
     frozen      Skip updating an installed plugin unless named explicitly.
     on          Lazy-load on a command or <Plug> mapping. Accepts a string
                 or a list. An empty list allows manual loading.
@@ -96,7 +96,7 @@ Options in a dictionary:
 ==============================================================================
 PLUGIN LAYOUT                                                 *plug-packages*
 
-New Git checkouts use this layout by default: >
+Git checkouts use this layout: >
 
     <plug-home>/pack/vim9-plug/opt/<name>
 <
@@ -108,11 +108,11 @@ whether and when a plugin loads. Vim handles the runtimepath precedence of
 native packages and their after directories. See |packages| and |:packadd|.
 
 Use |plug.Load()| for manual loading through vim9-plug, including its trigger
-cleanup and after/plugin scripts. Existing flat checkouts directly under the
-plugin home are reused. Local plugins and the dir and rtp options still work
-with paths outside the native layout. Paths that Vim cannot register with
-`:packadd!`, such as plugin homes containing a comma, use the same
-compatibility path handling.
+cleanup and after/plugin scripts. The package directory is the runtime root.
+For a locally maintained plugin, pass its directory within this tree to
+plug.Add(). Package names and aliases can contain ASCII letters, digits, dots,
+underscores, and hyphens. Choose a plugin home without commas or glob
+characters so Vim can register its packages with `:packadd!`.
 
 ==============================================================================
 COMMANDS                                                       *plug-commands*
@@ -126,11 +126,10 @@ COMMANDS                                                       *plug-commands*
                 updates. Vim jobs and channels enable parallel operation.
 
                                                                   *:PlugClean*
-:PlugClean[!]   List unused directories under the plugin home and managed
-                checkouts that need reinstallation. A declared plugin can
-                be nested several directories deep. Other Vim package groups
-                under the plugin home are preserved. Review the list before
-                confirming deletion. A bang skips the confirmation prompt.
+:PlugClean[!]   List unused packages and Git checkouts that need reinstallation
+                in pack/vim9-plug/opt under the plugin home. Review the list
+                before confirming deletion. A bang skips the confirmation
+                prompt.
 
                                                      *:PlugStatus* *:PlugDiff*
 :PlugStatus     Show installation and loading status.
@@ -183,8 +182,7 @@ MIGRATING                                                       *plug-migration*
 
 Move the declaration block into a Vim9 vimrc or a separate Vim9 file sourced
 from your vimrc. Put "vim9script" first and add the autoload import above
-your declarations. Restart Vim after replacing autoload/plug.vim. Your
-plugin installation directories can be reused.
+your declarations. Restart Vim after replacing autoload/plug.vim.
 
     call plug#begin()           becomes  plug.Begin()
     Plug 'owner/repo'           becomes  plug.Add('owner/repo')
@@ -196,6 +194,10 @@ Use a dictionary for a tag, e.g. plug.Add('owner/repo', {tag: 'v1.0'}).
 Convert legacy hook lambdas to (info) => Expression(info). A command hook
 such as ':let g:ready = 1' becomes ':g:ready = 1'. In a custom command
 string, prefix Vim9 ranges with a colon, e.g. ':-tabnew' in g:plug_window.
+
+Remove dir and rtp options and run :PlugInstall to install plugins in the
+native package tree. The package directory must be the plugin runtime root.
+Existing flat checkouts remain on disk. See |plug-packages|.
 
 For complete before-and-after examples see doc/migration.md in the
 vim9-plug repository.

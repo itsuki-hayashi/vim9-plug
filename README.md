@@ -38,7 +38,7 @@ installation backends are outside the support scope.
 
 ## Plugin layout
 
-New Git checkouts go under `<plug-home>/pack/vim9-plug/opt/<name>`, and
+Git checkouts go under `<plug-home>/pack/vim9-plug/opt/<name>`, and
 vim9-plug adds the plugin home to Vim's `packpath`. The default plugin
 home is `plugged` under the first `runtimepath` entry. Set `g:plug_home`
 or pass a directory to `plug.Begin()` to choose another home.
@@ -50,9 +50,9 @@ checkout. Vim determines where the package and its `after/` directory
 appear on `runtimepath`.
 [Vim's native package documentation](https://vimhelp.org/repeat.txt.html#packages)
 
-Existing checkouts directly under the plugin home still work in place.
-Local plugins, `dir` overrides, and `rtp` subdirectories can still use
-arbitrary locations.
+To upgrade from a flat installation, update your declarations and run
+`:PlugInstall` to populate the package tree. For local plugins or a
+checkout you want to keep, follow the [migration guide](doc/migration.md#move-to-the-native-package-layout).
 
 ## Development
 

@@ -1,26 +1,40 @@
 vim9script
 
-var user_runtime = $VIM9_PLUG_TEST_ROOT .. '/user, runtime'
-var first_entry = escape(user_runtime, ',')
-var last_entry = escape(user_runtime .. '/after', ',')
+final user_runtime = $VIM9_PLUG_TEST_ROOT .. '/user runtime'
+final first_entry = escape(user_runtime, ',')
+final last_entry = escape(user_runtime .. '/after', ',')
+final fixture_home = $VIM9_PLUG_TEST_ROOT .. '/plugin home'
+final fixture_opt = fixture_home .. '/pack/vim9-plug/opt'
 mkdir(user_runtime .. '/plugin', 'p')
 mkdir(user_runtime .. '/after', 'p')
 &rtp = join([first_entry, escape($VIM9_PLUG_TEST_ROOT, ','), &rtp, last_entry], ',')
 import autoload 'plug.vim' as plug
+
+def AssertRejected(repository: string, options: dict<any> = {})
+  var rejected = false
+  try
+    plug.Add(repository, options)
+  catch /^vim9-plug:/
+    rejected = true
+  endtry
+  assert_true(rejected, repository .. ' ' .. string(options))
+enddef
+
 g:load_order = []
 assert_false(plug.Begin(user_runtime .. '/plugin'))
+assert_false(plug.Begin($VIM9_PLUG_TEST_ROOT .. '/comma, home'))
+assert_false(plug.Begin($VIM9_PLUG_TEST_ROOT .. '/[glob] home'))
 assert_true(plug.Begin())
 assert_equal(user_runtime .. '/plugged', substitute(g:plug_home, '\\', '/', 'g'))
-assert_true(plug.Begin($VIM9_PLUG_TEST_ROOT .. '/plugin home'))
+assert_true(plug.Begin(fixture_home))
 assert_equal(0, exists('*plug#begin'))
 assert_notequal(2, exists(':Plug'))
-var rejected = false
-try
-  plug.Add('owner/plugin', {tag: 1})
-catch /vim9-plug: Invalid "tag" option/
-  rejected = true
-endtry
-assert_true(rejected)
+AssertRejected('owner/plugin', {tag: 1})
+AssertRejected('owner/plugin', {dir: user_runtime})
+AssertRejected('owner/plugin', {rtp: 'vim'})
+AssertRejected('owner/plugin', {as: 'invalid name'})
+AssertRejected('owner/plugin', {as: '..'})
+AssertRejected(user_runtime)
 assert_equal([], g:plugs_order)
 plug.Add($VIM9_PLUG_TEST_LOCAL, {'as': 'eager'})
 plug.End()
@@ -31,64 +45,70 @@ assert_equal(['eager', 'after eager'], g:load_order)
 assert_true(plug.Helptags())
 assert_equal(2, exists(':PlugUpgrade'))
 
-# Keep all ancestors and contents of declared plugins when cleaning nested layouts.
-final clean_home = $VIM9_PLUG_TEST_ROOT .. '/nested clean'
-final nested = clean_home .. '/group/subgroup/keep'
-final marker = nested .. '/data/marker'
-mkdir(nested .. '/data', 'p')
+# Clean only the managed native package tree.
+final clean_home = $VIM9_PLUG_TEST_ROOT .. '/clean packages'
+final clean_opt = clean_home .. '/pack/vim9-plug/opt'
+final keep = clean_opt .. '/keep'
+final marker = keep .. '/data/marker'
+final outside = $VIM9_PLUG_TEST_ROOT .. '/outside-clean'
+mkdir(keep .. '/data', 'p')
 writefile(['keep'], marker)
-mkdir(clean_home .. '/group/subgroup/keep-old', 'p')
-mkdir(clean_home .. '/group/stale', 'p')
+mkdir(clean_opt .. '/keep-old', 'p')
 mkdir(clean_home .. '/unregistered/deep', 'p')
 assert_true(plug.Begin(clean_home))
-plug.Add(nested)
+plug.Add(keep)
 if has('unix')
   final target = clean_home .. '/link-target'
-  final outside = $VIM9_PLUG_TEST_ROOT .. '/outside-clean'
   for dir in [target, outside]
     mkdir(dir, 'p')
     writefile(['keep'], dir .. '/marker')
   endfor
   for [link, dest] in [['active-link', target], ['stale-link', outside]]
-    system('ln -s ' .. shellescape(dest) .. ' ' .. shellescape(clean_home .. '/' .. link))
+    system('ln -s ' .. shellescape(dest) .. ' ' .. shellescape(clean_opt .. '/' .. link))
     assert_equal(0, v:shell_error)
   endfor
-  mkdir(outside .. '/unmanaged', 'p')
-  mkdir(clean_home .. '/pack/vim9-plug', 'p')
-  system('ln -s ' .. shellescape(outside) .. ' '
-    .. shellescape(clean_home .. '/pack/vim9-plug/opt'))
-  assert_equal(0, v:shell_error)
-  plug.Add(clean_home .. '/active-link')
+  plug.Add(clean_opt .. '/active-link')
 endif
 plug.End()
 PlugClean!
 if has('unix')
-  assert_equal('link', getftype(clean_home .. '/active-link'))
+  assert_equal('link', getftype(clean_opt .. '/active-link'))
   assert_true(filereadable(clean_home .. '/link-target/marker'))
-  assert_equal('', getftype(clean_home .. '/stale-link'))
-  assert_true(isdirectory(clean_home .. '/pack/vim9-plug/opt/unmanaged'))
-  assert_true(filereadable($VIM9_PLUG_TEST_ROOT .. '/outside-clean/marker'))
+  assert_true(filereadable(outside .. '/marker'))
 endif
 assert_true(filereadable(marker), join(getline(1, '$'), "\n"))
-assert_false(isdirectory(clean_home .. '/group/subgroup/keep-old'))
-assert_false(isdirectory(clean_home .. '/group/stale'))
-assert_false(isdirectory(clean_home .. '/unregistered'))
+assert_false(isdirectory(clean_opt .. '/keep-old'))
+assert_true(isdirectory(clean_home .. '/unregistered/deep'))
 normal q
 
-var comma_dir = $VIM9_PLUG_TEST_ROOT .. '/comma, ft plugin,'
-mkdir(comma_dir .. '/plugin', 'p')
-mkdir(comma_dir .. '/after/plugin', 'p')
-mkdir(comma_dir .. '/syntax', 'p')
-writefile(["call add(g:load_order, 'filetype plugin')"], comma_dir .. '/plugin/test.vim')
-writefile(["call add(g:load_order, 'after filetype')"], comma_dir .. '/after/plugin/test.vim')
-writefile(["let g:fixture_syntax = 1"], comma_dir .. '/syntax/plugfixture.vim')
-var map_dir = $VIM9_PLUG_TEST_ROOT .. '/mapped plugin'
+if has('unix')
+  final link_home = $VIM9_PLUG_TEST_ROOT .. '/linked clean packages'
+  final link_group = link_home .. '/pack/vim9-plug'
+  mkdir(link_group, 'p')
+  mkdir(outside .. '/unmanaged', 'p')
+  system('ln -s ' .. shellescape(outside) .. ' ' .. shellescape(link_group .. '/opt'))
+  assert_equal(0, v:shell_error)
+  assert_true(plug.Begin(link_home))
+  plug.End()
+  PlugClean!
+  assert_true(isdirectory(outside .. '/unmanaged'))
+  normal q
+endif
+
+final ft_dir = fixture_opt .. '/ft'
+mkdir(ft_dir .. '/plugin', 'p')
+mkdir(ft_dir .. '/after/plugin', 'p')
+mkdir(ft_dir .. '/syntax', 'p')
+writefile(["call add(g:load_order, 'filetype plugin')"], ft_dir .. '/plugin/test.vim')
+writefile(["call add(g:load_order, 'after filetype')"], ft_dir .. '/after/plugin/test.vim')
+writefile(["let g:fixture_syntax = 1"], ft_dir .. '/syntax/plugfixture.vim')
+final map_dir = fixture_opt .. '/mapped-plugin'
 mkdir(map_dir .. '/plugin', 'p')
 writefile(['vim9script', 'nnoremap <Plug>(fixture-map) <ScriptCmd>g:fixture_map = v:count<CR>'],
   map_dir .. '/plugin/map.vim')
 g:load_order = []
-assert_true(plug.Begin())
-plug.Add(substitute(comma_dir, '/', has('win32') ? '\' : '/', 'g'),
+assert_true(plug.Begin(fixture_home))
+plug.Add(substitute(ft_dir, '/', has('win32') ? '\' : '/', 'g'),
   {as: 'filetype', for: 'plugfixture'})
 plug.Add(map_dir, {as: 'mapping', on: '<Plug>(fixture-map)'})
 plug.End()
@@ -100,7 +120,7 @@ assert_equal(1, len(globpath(&rtp, 'syntax/plugfixture.vim', false, true)))
 feedkeys("3\<Plug>(fixture-map)", 'xt')
 assert_equal(3, get(g:, 'fixture_map', 0))
 
-var mixed_dir = $VIM9_PLUG_TEST_ROOT .. '/mixed triggers'
+final mixed_dir = fixture_opt .. '/mixed-triggers'
 mkdir(mixed_dir .. '/plugin', 'p')
 mkdir(mixed_dir .. '/syntax', 'p')
 writefile([
@@ -124,8 +144,7 @@ plug.End()
 plug.End()
 var entries = split(&rtp, '\\\@<!,')
 assert_equal(first_entry, entries[0])
-assert_equal(last_entry, entries[-1])
-assert_true(index(entries, extra_entry) >= 0)
+assert_equal([last_entry, extra_entry], entries[-2 :])
 assert_equal([], globpath(&rtp, 'syntax/plugfixture.vim', false, true))
 setline(1, ['first', 'second'])
 cursor(1, 1)
@@ -139,7 +158,7 @@ set filetype=plugother
 assert_equal(1, g:mixed_loads)
 assert_equal(1, g:mixed_events)
 
-var shared_dir = $VIM9_PLUG_TEST_ROOT .. '/shared bindings'
+final shared_dir = fixture_opt .. '/shared-bindings'
 mkdir(shared_dir .. '/plugin', 'p')
 writefile(['vim9script', 'command FixtureFirst echo "first"',
   'command FixtureShared g:shared_call = true',
@@ -174,7 +193,7 @@ assert_equal('', maparg('<Plug>(fixture-masked)', 'n'))
 close
 
 assert_true(plug.Begin())
-plug.Add(comma_dir, {as: 'manual', on: []})
+plug.Add(ft_dir, {as: 'manual', on: []})
 plug.Add($VIM9_PLUG_TEST_LAZY, {as: 'status-one', on: []})
 plug.Add(map_dir, {as: 'status-two', on: []})
 plug.End()

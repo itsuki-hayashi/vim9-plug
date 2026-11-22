@@ -1,12 +1,8 @@
 # Migrating to the Vim9 module
 
 Replace the installed `autoload/plug.vim` and migrate the declaration block
-before restarting Vim. Your plugin directories and configuration globals
-such as `g:plug_home` and `g:plug_threads` can be reused.
-
-New Git checkouts use Vim's native package layout under the same plugin
-home at `pack/vim9-plug/opt/<name>`. Existing checkouts directly under the
-plugin home and declarations with `dir` and `rtp` continue to work in place.
+before restarting Vim. Keep configuration globals such as `g:plug_home`
+and `g:plug_threads`.
 
 ## Rewrite the declaration block
 
@@ -42,6 +38,32 @@ contains `name`, `status`, and `force`.
 You can keep the rest of a legacy vimrc by putting the new declaration
 block in a separate file. Make `vim9script` the first command in that file
 and source it from the vimrc, for example `source ~/.vim/plugins.vim`.
+
+## Move to the native package layout
+
+vim9-plug loads packages from `<plug-home>/pack/vim9-plug/opt/<name>`.
+Remove `dir` overrides and run `:PlugInstall` after restarting Vim to
+install Git plugins in the package tree. This leaves old checkouts in
+place so you can review them for local changes before removing them.
+
+To preserve a checkout and its local changes, close Vim and move the
+entire checkout, including its Git metadata, to the new package path.
+Use `git worktree move` for linked worktrees. The final directory name
+is the repository name or the value of `as`.
+
+Each package directory must be the plugin's runtime root. If you used
+`rtp` to select a repository subdirectory, arrange for the subdirectory
+to be installed as its own native package and remove the `rtp` option.
+
+To declare a locally maintained plugin, place it in the package tree
+with its native package name, then pass its directory to `plug.Add()`.
+
+```vim
+plug.Add(g:plug_home .. '/pack/vim9-plug/opt/my-plugin')
+```
+
+Use Vim's native package configuration directly for local packages you
+keep in a different package group.
 
 ## Update other calls and hooks
 
