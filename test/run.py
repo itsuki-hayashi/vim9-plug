@@ -136,6 +136,12 @@ def run(vim, source, directory, scenario="workflow", cmd_shell=False):
         env["VIM9_PLUG_TEST_SLOW"] = "1"
     script = directory / f"{scenario}.vim"
     shutil.copyfile(ROOT / "test" / script.name, script)
+    if source == UPSTREAM:
+        shutil.copyfile(ROOT / "test/upstream.vim", autoload / "upstream.vim")
+        driver = script.read_text(encoding="utf-8")
+        driver = driver.replace("import autoload 'plug.vim' as plug",
+                                "import autoload 'upstream.vim' as plug")
+        script.write_text(driver, encoding="utf-8", newline="\n")
     argv = [vim, "-Nu", "NONE", "-U", "NONE", "-i", "NONE", "-n", "-es",
             "-V1", "-S", str(script)]
     if cmd_shell:

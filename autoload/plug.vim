@@ -29,9 +29,9 @@ if exists('g:loaded_plug')
 endif
 
 const is_win = has('win32')
+const default_shell = is_win ? 'cmd.exe' : 'sh'
 const upgrade_origin = 'https://github.com/itsuki-hayashi/vim9-plug.git'
 const use_jobs = has('job') && has('channel')
-const TYPE = {string: v:t_string, list: v:t_list, dict: v:t_dict, funcref: v:t_func}
 const base_spec: dict<any> = {branch: '', frozen: 0}
 var loaded: dict<number> = exists('loaded') ? loaded : {}
 var triggers: dict<dict<list<string>>> = exists('triggers') ? triggers : {}
@@ -77,53 +77,14 @@ def IsLocalPlug(repo: string): bool
   return is_win ? repo =~? '^[a-z]:\|^[%~]' : repo[0] =~ '[/$~]'
 enddef
 
-# Legacy vimrc values can use numeric strings for flags.
+# Numeric strings are valid in configuration flags.
 def Enabled(value: any): bool
   return type(value) == v:t_string ? str2nr(value) != 0 : !empty(value)
 enddef
 
-# Preserve the legacy function names and the expression and range syntax.
-legacy function! plug#begin(...)
-  return call('s:Begin', a:000)
-endfunction
-
-legacy function! plug#end()
-  return s:End()
-endfunction
-
-legacy function! plug#(repo, ...)
-  return call('s:Declare', [a:repo] + a:000)
-endfunction
-
-legacy function! plug#load(...)
-  return call('s:Load', a:000)
-endfunction
-
-legacy function! plug#helptags()
-  return s:Helptags()
-endfunction
-
-legacy function! plug#shellescape(arg, ...)
-  return call('s:Shellescape', [a:arg] + a:000)
-endfunction
-
-legacy function! s:DefinePlug()
-  command! -nargs=+ -bar Plug call plug#(<args>)
-endfunction
-
-legacy function! s:StatusUpdateRange() range
-  call s:StatusUpdate(a:firstline, a:lastline)
-endfunction
-
-legacy function! s:DeleteOpAdapter(type, ...)
-  call call('s:DeleteOp', [a:type] + a:000)
-endfunction
-
 def RegisterCommands()
-  DefinePlug()
   if !executable('git')
-    Err('`git` executable not found. Most commands will not be available.'
-      .. ' To suppress this message, prepend ' .. '`silent!` to ' .. '`call plug#begin(...)`.')
+    Err('Git executable not found. Management commands will not be available.')
     return
   endif
   if is_win && &shellslash && (&shell =~ 'cmd\(\.exe\)\?$' || IsPowershell(&shell))
@@ -243,19 +204,21 @@ def TempName(): string
   return PlugCall('tempname')
 enddef
 
-def Begin(...args: list<any>): number
+export def Begin(directory: string = ''): bool
   var home: string
-  if len(args) > 0
-    home = Path(ModifyFilename(ExpandFilename(args[0]), ':p'))
+  if !empty(directory)
+    home = Path(ModifyFilename(ExpandFilename(directory), ':p'))
   elseif exists('g:plug_home')
     home = Path(g:plug_home)
   elseif !empty(&rtp)
     home = Path(split(&rtp, ',')[0]) .. '/plugged'
   else
-    return Err('Unable to determine plug home. Try calling plug#begin() with a path argument.')
+    Err('Unable to determine plug home. Pass a directory to Begin().')
+    return false
   endif
   if ModifyFilename(home, ':t') ==# 'plugin' && ModifyFilename(home, ':h') ==# first_rtp
-    return Err('Invalid plug home. ' .. home .. ' is a standard Vim runtime path and is not allowed.')
+    Err('Invalid plug home. ' .. home .. ' is a standard Vim runtime path and is not allowed.')
+    return false
   endif
 
   JobAbort(false)
@@ -267,11 +230,11 @@ def Begin(...args: list<any>): number
   endfor
 
   RegisterCommands()
-  return 1
+  return true
 enddef
 
 def ToA(v: any): list<any>
-  return type(v) == TYPE.list ? v : [v]
+  return type(v) == v:t_list ? v : [v]
 enddef
 
 def Glob(from: string, pattern: string): list<string>
@@ -323,9 +286,10 @@ def Lazy(plug: dict<any>, opt: string): bool
             len(Glob(PluginRuntimePath(plug), 'after/plugin')))
 enddef
 
-def End(): number
+export def End()
   if !exists('g:plugs')
-    return Err('plug#end() called without calling plug#begin() first')
+    Err('Call Begin() before End().')
+    return
   endif
 
   if exists('#PlugLOD')
@@ -390,10 +354,11 @@ def End(): number
   endfor
 
   for [map, names] in items(lod.map)
+    # Enter Ex temporarily so the trigger can replay visual and operator prefixes.
     for [mode, map_prefix, key_prefix] in
               [['i', '<C-\><C-O>', ''], ['n', '', ''], ['v', '', 'gv'], ['o', '', '']]
       execute printf(
-          '%snoremap <silent> %s %s:<C-U>call <SID>LodMap(%s, %s, %s, "%s")<CR>',
+          '%snoremap <silent> %s %s:<C-U>vim9cmd call <SID>LodMap(%s, %s, %s, "%s")<CR>',
           mode, map, map_prefix, string(map), string(names), mode == 'i' ? 'v:false' : 'v:true', key_prefix)
     endfor
   endfor
@@ -414,7 +379,6 @@ def End(): number
   else
     ReloadPlugins()
   endif
-  return 0
 enddef
 
 def LoadedNames(): list<string>
@@ -487,18 +451,17 @@ enddef
 def Batchfile(cmd: string): list<string>
   var batchfile = TempName() .. '.bat'
   writefile(WrapCmds(cmd), batchfile)
-  var run_cmd = Shellescape(batchfile, {'shell': &shell, 'script': 0})
+  var run_cmd = ShellEscape(batchfile, &shell, false)
   if IsPowershell(&shell)
     run_cmd = '& ' .. run_cmd
   endif
   return [batchfile, run_cmd]
 enddef
 
-def Err(msg: string): number
+def Err(msg: string)
   echohl ErrorMsg
   echom '[vim-plug] ' .. msg
   echohl None
-  return 0
 enddef
 
 def Warn(cmd: string, msg: string): number
@@ -575,18 +538,16 @@ def Dobufread(names: list<string>)
   endfor
 enddef
 
-def Load(...args: list<any>): number
-  if len(args) == 0
-    return Err('Argument missing: plugin name(s) required')
-  endif
+export def Load(names: list<string>): bool
   if !exists('g:plugs')
-    return Err('plug#begin was not called')
+    Err('Call Begin() before Load().')
+    return false
   endif
-  var names = len(args) == 1 && type(args[0]) == TYPE.list ? args[0] : args
   var unknowns = filter(copy(names), (_, name) => !has_key(g:plugs, name))
   if !empty(unknowns)
     var s = len(unknowns) > 1 ? 's' : ''
-    return Err(printf('Unknown plugin%s: %s', s, join(unknowns, ', ')))
+    Err(printf('Unknown plugin%s: %s', s, join(unknowns, ', ')))
+    return false
   endif
   var unloaded = filter(copy(names), (_, name) => !get(loaded, name, 0))
   if !empty(unloaded)
@@ -594,9 +555,9 @@ def Load(...args: list<any>): number
       Lod([name], ['ftdetect', 'after/ftdetect', 'plugin', 'after/plugin'])
     endfor
     Dobufread(unloaded)
-    return 1
+    return true
   endif
-  return 0
+  return false
 enddef
 
 def RemoveTriggers(name: string)
@@ -646,7 +607,8 @@ enddef
 def LodCmd(cmd: string, bang: string, l1: number, l2: number, args: string, mods: string, names: list<string>)
   Lod(names, ['ftdetect', 'after/ftdetect', 'plugin', 'after/plugin'])
   Dobufread(names)
-  execute printf('legacy %s %s%s%s %s', mods, (l1 == l2 ? '' : (l1 .. ',' .. l2)), cmd, bang, args)
+  final address = l1 == l2 ? '' : printf(':%d,%d', l1, l2)
+  execute printf('%s %s%s%s %s', mods, address, cmd, bang, args)
 enddef
 
 def LodMap(map: string, names: list<string>, with_prefix: bool, prefix: string)
@@ -679,62 +641,49 @@ def LodMap(map: string, names: list<string>, with_prefix: bool, prefix: string)
   feedkeys(substitute(map, '^<Plug>', "\<Plug>", '') .. extra)
 enddef
 
-def Declare(repo_arg: any, ...args: list<any>): number
-  if len(args) > 1
-    return Err('Invalid number of arguments (1..2)')
+export def Add(repository: string, options: dict<any> = {})
+  if !exists('g:plugs')
+    throw 'vim9-plug: Call Begin() before Add().'
   endif
 
-  var repo = ''
-  try
-    repo = Trim(repo_arg)
-    var opts = len(args) == 1 ? ParseOptions(args[0]) : base_spec
-    var name = get(opts, 'as', ModifyFilename(repo, ':t:s?\.git$??'))
-    var spec = extend(InferProperties(name, repo), opts)
-    if !has_key(g:plugs, name)
-      add(g:plugs_order, name)
-    endif
-    g:plugs[name] = spec
-    loaded[name] = get(loaded, name, 0)
-  catch
-    return Err(repo .. ' ' .. v:exception)
-  endtry
-  return 0
+  final repo = Trim(repository)
+  final opts = ParseOptions(options)
+  final name = get(opts, 'as', ModifyFilename(repo, ':t:s?\.git$??'))
+  final spec = extend(InferProperties(name, repo), opts)
+  if !has_key(g:plugs, name)
+    add(g:plugs_order, name)
+  endif
+  g:plugs[name] = spec
+  loaded[name] = get(loaded, name, 0)
 enddef
 
-def ParseOptions(arg: any): dict<any>
-  var opts = copy(base_spec)
-  var type = type(arg)
-  var opt_errfmt = 'Invalid argument for "%s" option of :Plug (expected: %s)'
-  if type == TYPE.string
-    if empty(arg)
-      throw printf(opt_errfmt, 'tag', 'string')
+def ParseOptions(options: dict<any>): dict<any>
+  const error_format = 'vim9-plug: Invalid "%s" option for Add() (expected %s)'
+  for key in ['branch', 'tag', 'commit', 'rtp', 'dir', 'as']
+    if has_key(options, key)
+        && (type(options[key]) != v:t_string || empty(options[key]))
+      throw printf(error_format, key, 'a nonempty string')
     endif
-    opts.tag = arg
-  elseif type == TYPE.dict
-    for opt in ['branch', 'tag', 'commit', 'rtp', 'dir', 'as']
-      if has_key(arg, opt)
-          && (type(arg[opt]) != TYPE.string || empty(arg[opt]))
-        throw printf(opt_errfmt, opt, 'string')
-      endif
-    endfor
-    for opt in ['on', 'for']
-      if has_key(arg, opt)
-          && type(arg[opt]) != TYPE.list
-          && (type(arg[opt]) != TYPE.string || empty(arg[opt]))
-        throw printf(opt_errfmt, opt, 'string or list')
-      endif
-    endfor
-    if has_key(arg, 'do')
-          && type(arg.do) != TYPE.funcref
-          && (type(arg.do) != TYPE.string || empty(arg.do))
-        throw printf(opt_errfmt, 'do', 'string or funcref')
+  endfor
+  for key in ['on', 'for']
+    if has_key(options, key)
+        && type(options[key]) != v:t_list
+        && (type(options[key]) != v:t_string || empty(options[key]))
+      throw printf(error_format, key, 'a nonempty string or a list of strings')
     endif
-    extend(opts, arg)
-    if has_key(opts, 'dir')
-      opts.dir = Dirpath(ExpandFilename(opts.dir))
+    if has_key(options, key) && type(options[key]) == v:t_list
+        && !empty(filter(copy(options[key]), (_, item) => type(item) != v:t_string))
+      throw printf(error_format, key, 'a nonempty string or a list of strings')
     endif
-  else
-    throw 'Invalid argument type (expected: string or dictionary)'
+  endfor
+  if has_key(options, 'do')
+      && type(options.do) != v:t_func
+      && (type(options.do) != v:t_string || empty(options.do))
+    throw printf(error_format, 'do', 'a nonempty string or a function')
+  endif
+  final opts = extend(copy(base_spec), options)
+  if has_key(opts, 'dir')
+    opts.dir = Dirpath(ExpandFilename(opts.dir))
   endif
   return opts
 enddef
@@ -765,9 +714,10 @@ def Update(force: number, names: list<string>)
   UpdateImpl(1, force, names)
 enddef
 
-def Helptags(): number
+export def Helptags(): bool
   if !exists('g:plugs')
-    return Err('plug#begin was not called')
+    Err('Call Begin() before Helptags().')
+    return false
   endif
   for spec in values(g:plugs)
     var docd = join([PluginRuntimePath(spec), 'doc'], '/')
@@ -775,7 +725,7 @@ def Helptags(): number
       silent! execute 'helptags' fnameescape(docd)
     endif
   endfor
-  return 1
+  return true
 enddef
 
 def Syntax()
@@ -846,7 +796,7 @@ def Lastline(msg: string): string
 enddef
 
 def NewWindow()
-  execute 'legacy ' .. get(g:, 'plug_window', '-tabnew')
+  execute get(g:, 'plug_window', ':-tabnew')
 enddef
 
 def PaneWindow(): number
@@ -893,13 +843,13 @@ def SwitchOut(view: dict<any>, action: string = '')
 enddef
 
 def FinishBindings()
-  nnoremap <silent> <buffer> R  :call <SID>Retry()<cr>
-  nnoremap <silent> <buffer> D  :PlugDiff<cr>
-  nnoremap <silent> <buffer> S  :PlugStatus<cr>
-  nnoremap <silent> <buffer> U  :call <SID>StatusUpdateRange()<cr>
-  xnoremap <silent> <buffer> U  :call <SID>StatusUpdateRange()<cr>
-  nnoremap <silent> <buffer> ]] :silent! call <SID>Section('')<cr>
-  nnoremap <silent> <buffer> [[ :silent! call <SID>Section('b')<cr>
+  nnoremap <silent> <buffer> R  <ScriptCmd>Retry()<CR>
+  nnoremap <silent> <buffer> D  <ScriptCmd>PlugDiff<CR>
+  nnoremap <silent> <buffer> S  <ScriptCmd>PlugStatus<CR>
+  nnoremap <silent> <buffer> U  <ScriptCmd>StatusUpdate([line('.'), line('.')])<CR>
+  xnoremap <silent> <buffer> U  <ScriptCmd>StatusUpdate(VisualLines())<CR>
+  nnoremap <silent> <buffer> ]] <ScriptCmd>silent! Section('')<CR>
+  nnoremap <silent> <buffer> [[ <ScriptCmd>silent! Section('b')<CR>
 enddef
 
 def Prepare(...args: list<number>)
@@ -924,7 +874,7 @@ def Prepare(...args: list<number>)
     NewWindow()
   endif
 
-  nnoremap <silent> <buffer> q :call <SID>ClosePane()<cr>
+  nnoremap <silent> <buffer> q <ScriptCmd>ClosePane()<CR>
   if len(args) == 0
     FinishBindings()
   endif
@@ -999,7 +949,7 @@ def Bang(cmd: string, ...args: list<string>): string
   final had_command = exists('g:_plug_bang')
   final previous_command = get(g:, '_plug_bang', '')
   try
-    var run_cmd = !empty(args) ? WithCd(cmd, args[0], {'shell': is_win ? 'cmd.exe' : &shell}) : cmd
+    var run_cmd = !empty(args) ? WithCd(cmd, args[0], is_win ? 'cmd.exe' : &shell) : cmd
     if is_win
       [batchfile, run_cmd] = Batchfile(run_cmd)
     endif
@@ -1051,7 +1001,7 @@ def RunHook(spec: dict<any>, info: dict<any>): string
         ReorgRtp()
       endif
       LoadPlugin(spec)
-      execute 'legacy ' .. Hook[1 :]
+      execute Hook[1 :]
     endif
   catch
     error = v:exception
@@ -1177,7 +1127,7 @@ def UpdateImpl(pull: number, force: number, arguments: list<string>)
       mkdir(g:plug_home, 'p')
     catch
       Err('Invalid plug directory: ' .. g:plug_home
-        .. '. Try to call plug#begin with a valid directory')
+        .. '. Pass a valid directory to Begin().')
       return
     endtry
   endif
@@ -1651,9 +1601,9 @@ def QueuePlugin(name: string, spec: dict<any>)
   Spawn(name, spec, commands, {dir: spec.dir})
 enddef
 
-def ShellescCmd(arg: string, script: any): string
+def ShellescCmd(arg: string, for_batch: bool): string
   var escaped = substitute('"' .. arg .. '"', '[&|<>()@^!"]', '^&', 'g')
-  return substitute(escaped, '%', (Enabled(script) ? '%' : '^') .. '&', 'g')
+  return substitute(escaped, '%', (for_batch ? '%' : '^') .. '&', 'g')
 enddef
 
 def ShellescPs1(arg: string): string
@@ -1664,29 +1614,13 @@ def ShellescSh(arg: string): string
   return "'" .. substitute(arg, "'", "'\\\\''", 'g') .. "'"
 enddef
 
-# Escape the shell argument based on the shell.
-# The selected shell can differ from the shell Vim uses.
-# 1. shellslash determines whether to use single/double quotes.
-#    Double-quote escaping is fragile for cmd.exe.
-# 2. It does not work for powershell.
-# 3. It does not work for *sh shells if the command is executed
-#    via cmd.exe (ie. cmd.exe /c sh -c command command_args)
-# 4. It does not support batchfile syntax.
-#
-# Accepts an optional dictionary with the following keys:
-# - shell: same as Vim's 'shell' option.
-#          If unset, fallback to 'cmd.exe' on Windows or 'sh'.
-# - script: If truthy and shell is cmd.exe, escape for batchfile syntax.
-
-def Shellescape(arg: any, ...args: list<any>): string
+# The command may run under a different shell from Vim's 'shell' option.
+export def ShellEscape(arg: string, shell: string = default_shell, for_batch: bool = true): string
   if arg =~# '^[A-Za-z0-9_/:.-]\+$'
     return arg
   endif
-  var opts = len(args) > 0 && type(args[0]) == TYPE.dict ? args[0] : {}
-  var shell = get(opts, 'shell', is_win ? 'cmd.exe' : 'sh')
-  var script = get(opts, 'script', 1)
   if shell =~# 'cmd\(\.exe\)\?$'
-    return ShellescCmd(arg, script)
+    return ShellescCmd(arg, for_batch)
   elseif IsPowershell(shell)
     return ShellescPs1(arg)
   endif
@@ -1722,19 +1656,15 @@ def FormatMessage(bullet: string, name: string, message: string): list<string>
   endif
 enddef
 
-def WithCd(cmd: string, dir: string, ...args: list<any>): string
-  var opts = len(args) > 0 && type(args[0]) == TYPE.dict ? args[0] : {}
-  opts.shell = get(opts, 'shell', &shell)
-  opts.script = get(opts, 'script', 1)
-
-  var pwsh = IsPowershell(opts.shell)
+def WithCd(cmd: string, dir: string, shell: string, for_batch: bool = true): string
+  var pwsh = IsPowershell(shell)
   var cd = is_win && !pwsh ? 'cd /d' : 'cd'
   var sep = pwsh ? ';' : '&&'
   var pwsh_block_required = pwsh && !has('patch-9.2.6')
   var start = pwsh_block_required ? '& { ' : ''
   var end = pwsh_block_required ? ' }' : ''
 
-  return printf('%s%s %s %s %s%s', start, cd, Shellescape(dir, opts), sep, cmd, end)
+  return printf('%s%s %s %s %s%s', start, cd, ShellEscape(dir, shell, for_batch), sep, cmd, end)
 enddef
 
 # Windows and Unix GUI builds can run Git directly with a per-process cwd.
@@ -1774,12 +1704,12 @@ else
     final previous_shell = Chsh(1)
     var output: string
     try
-      var command = join(mapnew(argv, (_, arg) => Shellescape(arg, {shell: &shell, script: 0})))
+      var command = join(mapnew(argv, (_, arg) => ShellEscape(arg, &shell, false)))
       if IsPowershell(&shell)
         command = '& ' .. command
       endif
       if !empty(directory)
-        command = WithCd(command, directory, {script: 0})
+        command = WithCd(command, directory, &shell, false)
       endif
       output = system(command)
       shell_error = v:shell_error
@@ -1936,9 +1866,9 @@ def Clean(force: number)
       Delete([6, line('$')], 1)
     else
       setline(4, 'Cancelled.')
-      nnoremap <silent> <buffer> d :set opfunc=<SID>DeleteOpAdapter<cr>g@
+      nnoremap <silent> <buffer> d <ScriptCmd>set operatorfunc=<SID>DeleteOperator<CR>g@
       nmap     <silent> <buffer> dd d_
-      xnoremap <silent> <buffer> d :<c-u>call <SID>DeleteOpAdapter(visualmode(), 1)<cr>
+      xnoremap <silent> <buffer> d <ScriptCmd>Delete(VisualLines(), 0)<CR>
       echo 'Delete the lines (d{motion}) to delete the corresponding directories'
     endif
   endif
@@ -1946,8 +1876,15 @@ def Clean(force: number)
   setlocal nomodifiable
 enddef
 
-def DeleteOp(type: string, ...args: list<any>)
-  Delete(!empty(args) ? [line("'<"), line("'>")] : [line("'["), line("']")], 0)
+def DeleteOperator(_type: string)
+  Delete([line("'["), line("']")], 0)
+enddef
+
+def VisualLines(): list<number>
+  final anchor = line('v')
+  final cursor_line = line('.')
+  execute "normal! \<Esc>"
+  return [min([anchor, cursor_line]), max([anchor, cursor_line])]
 enddef
 
 def Delete(range: list<number>, force: number)
@@ -2097,8 +2034,8 @@ def Status()
   setlocal nomodifiable
   if unloaded
     echo "Press 'L' on each line to load plugin, or 'U' to update"
-    nnoremap <silent> <buffer> L :call <SID>StatusLoad(line('.'))<cr>
-    xnoremap <silent> <buffer> L :call <SID>StatusLoad(line('.'))<cr>
+    nnoremap <silent> <buffer> L <ScriptCmd>StatusLoad(line('.'))<CR>
+    xnoremap <silent> <buffer> L <ScriptCmd>StatusLoadSelection()<CR>
   endif
 enddef
 
@@ -2110,15 +2047,22 @@ def StatusLoad(lnum: number)
   var line = getline(lnum)
   var name = ExtractName(line, '-', '(not loaded)')
   if !empty(name)
-    Load(name)
+    Load([name])
     setlocal modifiable
     setline(lnum, substitute(line, ' (not loaded)$', '', ''))
     setlocal nomodifiable
   endif
 enddef
 
-def StatusUpdate(firstline: number, lastline: number)
-  var lines = getline(firstline, lastline)
+def StatusLoadSelection()
+  final [first, last] = VisualLines()
+  for lnum in range(first, last)
+    StatusLoad(lnum)
+  endfor
+enddef
+
+def StatusUpdate(selection: list<number>)
+  var lines = getline(selection[0], selection[1])
   var names = filter(map(lines, (_, line) => ExtractName(line, '[x-]', '')), (_, name) => !empty(name))
   if !empty(names)
     echo ""
@@ -2267,7 +2211,7 @@ def Diff()
             .. (cnts[1] > 0 ? printf(' %d plugin(s) have pending updates.', cnts[1]) : ''))
 
   if cnts[0] > 0 || cnts[1] > 0
-    nnoremap <silent> <buffer> <plug>(plug-preview) :silent! call <SID>PreviewCommit()<cr>
+    nnoremap <silent> <buffer> <plug>(plug-preview) <ScriptCmd>silent! PreviewCommit()<CR>
     if empty(maparg("\<cr>", 'n'))
       nmap <buffer> <cr> <plug>(plug-preview)
     endif
@@ -2276,7 +2220,7 @@ def Diff()
     endif
   endif
   if cnts[0] > 0
-    nnoremap <silent> <buffer> X :call <SID>Revert()<cr>
+    nnoremap <silent> <buffer> X <ScriptCmd>Revert()<CR>
     echo "Press 'X' on each block to revert the update"
   endif
   normal! gg
@@ -2313,10 +2257,10 @@ enddef
 def Snapshot(force: number, ...args: list<string>)
   Prepare()
   setfiletype vim
-  append(0, ['" Generated by vim-plug',
-                    '" ' .. strftime("%c"),
-                    '" :source this file in vim to restore the snapshot',
-                    '" or execute: vim -S snapshot.vim',
+  append(0, ['vim9script',
+                    '# Generated by vim9-plug',
+                    '# ' .. strftime('%c'),
+                    '# Source this file after declaring plugins.',
                     '', '', 'PlugUpdate!'])
   :1
   var anchor = line('$') - 3
@@ -2325,7 +2269,9 @@ def Snapshot(force: number, ...args: list<string>)
   for name in reverse(names)
     var sha = has_key(g:plugs[name], 'commit') ? g:plugs[name].commit : GitRevision(g:plugs[name].dir)
     if !empty(sha)
-      append(anchor, printf("silent! let g:plugs[%s].commit = %s", string(name), string(sha)))
+      final key = string(name)
+      append(anchor, [printf('if has_key(g:plugs, %s)', key),
+        printf('  g:plugs[%s].commit = %s', key, string(sha)), 'endif'])
       redraw
     endif
   endfor

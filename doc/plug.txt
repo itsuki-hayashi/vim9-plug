@@ -7,48 +7,65 @@ vim9-plug is a single-file Vim plugin manager based on vim-plug 0.15.0.
 It requires Vim 9.1 or later with Vim9 script support and Git.
 
 Copy autoload/plug.vim into the autoload directory on your runtimepath.
-To migrate from vim-plug, replace the installed copy and restart Vim.
-Your existing declarations and plugin directory can be reused: >
+Add this to your Vim9 configuration: >
 
-    call plug#begin()
-    Plug 'tpope/vim-sensible'
-    call plug#end()
+    vim9script
+
+    import autoload 'plug.vim' as plug
+
+    if plug.Begin()
+      plug.Add('tpope/vim-sensible')
+      plug.End()
+    endif
 <
 Run :PlugInstall to install declared plugins. To use this help file, put
-it in doc/ on your runtimepath and run :helptags ALL.
+it in doc/ on your runtimepath and run :helptags ALL. See |plug-migration|
+for migration from vim-plug or earlier vim9-plug releases.
 
 ==============================================================================
-FUNCTIONS                                                     *plug-functions*
+VIM9 MODULE                                                  *plug-functions*
 
-*plug#begin()*  Call plug#begin([directory]) to start the declaration block.
-                If omitted, the directory comes from g:plug_home or the
-                first runtimepath entry followed by /plugged.
+The examples use the namespace "plug" from: >
 
-*plug#()*       Register a plugin. The :Plug command normally calls this.
-                It accepts a repository and an optional tag or options
-                dictionary. Existing legacy declarations are supported.
+    import autoload 'plug.vim' as plug
+<
+                                                               *plug.Begin()*
+plug.Begin(directory: string = ''): bool
+                Start the declaration block. An empty or omitted directory
+                uses g:plug_home or the first runtimepath entry followed by
+                /plugged. Returns true when the plugin home is accepted.
 
-*plug#end()*    Update runtimepath, set up lazy-loading triggers, and turn
-                on filetype plugins and indentation. During startup it
-                enables syntax highlighting if it is available.
-
-*plug#load()*   Load plugins by name: plug#load('one', 'two') or
-                plug#load(['one', 'two']). Returns 1 if a plugin was
-                loaded and 0 if all were loaded or an error was reported.
-
-*plug#helptags()*  Generate help tags for declared plugin directories.
-
-*plug#shellescape()*  Escape an argument for a POSIX shell, cmd.exe, or
-                PowerShell. An optional dictionary accepts shell and
-                script (whether cmd.exe should use batch-file escaping).
-
-==============================================================================
-COMMANDS                                 *plug-commands* *:Plug* *PlugOptions*
-
-:Plug {repository} [, {options}]
-                Declare a Git repository or an externally managed local
+                                                                 *plug.Add()*
+plug.Add(repository: string, options: dict<any> = {})
+                Register a Git repository or an externally managed local
                 plugin. A GitHub owner/repository shorthand uses
-                g:plug_url_format. A string option selects a tag.
+                g:plug_url_format. Pass a dictionary for options. Invalid
+                declarations throw an exception. See |plug-options|.
+
+                                                                 *plug.End()*
+plug.End()      Apply runtimepath ordering, set up lazy-loading triggers,
+                and enable filetype plugins and indentation. During startup,
+                also enable syntax highlighting when available.
+
+                                                                *plug.Load()*
+plug.Load(names: list<string>): bool
+                Load one or more named plugins, e.g. plug.Load(['one']).
+                Returns true if a plugin was loaded.
+
+                                                            *plug.Helptags()*
+plug.Helptags(): bool
+                Generate help tags for declared plugin directories.
+                Returns true once the tag generation pass runs.
+
+                                                         *plug.ShellEscape()*
+plug.ShellEscape(arg: string [, shell: string [, for_batch: bool]]): string
+                Escape an argument for a POSIX shell, cmd.exe, or PowerShell.
+                The default shell is cmd.exe on Windows and sh on other
+                platforms. The optional for_batch flag defaults to true and
+                selects cmd.exe batch-file escaping.
+
+==============================================================================
+DECLARATION OPTIONS                                *plug-options* *PlugOptions*
 
 Options in a dictionary:
 
@@ -64,8 +81,11 @@ Options in a dictionary:
     for         Lazy-load on a filetype. Accepts a string or a list.
     do          Post-update hook. A shell string runs in the plugin
                 directory. A string beginning with a colon runs as a Vim
-                command. A Funcref receives a dictionary with name,
+                command in Vim9 syntax. A function receives a dictionary with name,
                 status (installed, updated, or unchanged), and force.
+
+==============================================================================
+COMMANDS                                                       *plug-commands*
 
                                                 *:PlugInstall* *:PlugUpdate*
 :PlugInstall[!] [name ...] [threads]    Install missing plugins.
@@ -85,7 +105,7 @@ Options in a dictionary:
 
                                                                 *:PlugSnapshot*
 :PlugSnapshot[!] [file]
-                Generate a Vim script that restores current plugin
+                Generate a Vim9 script that restores current plugin
                 revisions. A bang allows replacing an existing file.
                 Source the generated script after declaring your plugins.
 
@@ -98,7 +118,7 @@ CONFIGURATION                                           *plug-global-options*
 
 *g:plug_threads*       Maximum parallel tasks. Default: 16.
 *g:plug_shallow*       Use shallow clones when possible. Default: 1.
-*g:plug_window*        Command to open the management pane. Default: -tabnew.
+*g:plug_window*        Command to open the management pane. Default: :-tabnew.
 *g:plug_pwindow*       Command to open a diff preview.
                        Default: vertical rightbelow new.
 *g:plug_url_format*    URL format for subsequent GitHub shorthand declarations.
@@ -123,5 +143,27 @@ PANE KEYS                                                      *plug-keybindings
   X       Revert an update in :PlugDiff after confirmation.
   d{motion}, dd
           Select directories for deletion after declining :PlugClean.
+
+==============================================================================
+MIGRATING                                                       *plug-migration*
+
+Move the declaration block into a Vim9 vimrc or a separate Vim9 file sourced
+from your vimrc. Put "vim9script" first and add the autoload import above
+your declarations. Restart Vim after replacing autoload/plug.vim. Your
+plugin installation directories can be reused.
+
+    call plug#begin()           becomes  plug.Begin()
+    Plug 'owner/repo'           becomes  plug.Add('owner/repo')
+    call plug#end()             becomes  plug.End()
+    call plug#load('one')       becomes  plug.Load(['one'])
+    call plug#helptags()        becomes  plug.Helptags()
+
+Use a dictionary for a tag, e.g. plug.Add('owner/repo', {tag: 'v1.0'}).
+Convert legacy hook lambdas to (info) => Expression(info). A command hook
+such as ':let g:ready = 1' becomes ':g:ready = 1'. In a custom command
+string, prefix Vim9 ranges with a colon, e.g. ':-tabnew' in g:plug_window.
+
+For complete before-and-after examples see doc/migration.md in the
+vim9-plug repository.
 
  vim:tw=78:ts=8:noet:ft=help:norl:

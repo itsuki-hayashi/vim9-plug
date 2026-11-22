@@ -11,21 +11,24 @@ Download [autoload/plug.vim](https://raw.githubusercontent.com/itsuki-hayashi/vi
 and put it in the first user directory on your runtimepath, under
 `autoload/plug.vim`. Common locations are `~/.vim/autoload/plug.vim`
 on Unix and `$HOME/vimfiles/autoload/plug.vim` on Windows. If you already
-use vim-plug, replace that file and restart Vim. Keep your vimrc and
-existing plugin directory.
+use vim-plug or an earlier vim9-plug, see the [migration guide](doc/migration.md).
+
+In a Vim9 configuration:
 
 ```vim
-call plug#begin()
+vim9script
 
-Plug 'tpope/vim-sensible'
+import autoload 'plug.vim' as plug
 
-call plug#end()
+if plug.Begin()
+  plug.Add('tpope/vim-sensible')
+  plug.End()
+endif
 ```
 
-The same declarations work in a Vim9 vimrc. Use `:PlugInstall` to install
-plugins and `:PlugUpdate` to update them. See [Vim help](doc/plug.txt) for
-the commands, declaration options, mappings, and hooks. To install the
-help alongside the script, copy `doc/plug.txt` into the same runtime
+Use `:PlugInstall` to install plugins and `:PlugUpdate` to update them. See
+[Vim help](doc/plug.txt) for the exported API, commands, options, and hooks.
+To install the help alongside the script, copy `doc/plug.txt` into the same runtime
 directory under `doc/`, then run `:helptags ALL` and `:help plug`.
 
 `:PlugUpgrade` updates the installed script from this repository and
