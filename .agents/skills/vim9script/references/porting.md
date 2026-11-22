@@ -8,7 +8,7 @@ Keep registration small. This example has two files on the plugin's runtimepath.
 vim9script
 
 import autoload 'lineaudit.vim' as audit
-command! -nargs=1 AuditCount echo audit.Count(getline(1, '$'), <q-args>)
+command -nargs=1 AuditCount echo audit.Count(getline(1, '$'), <q-args>)
 ```
 
 `autoload/lineaudit.vim`
@@ -47,6 +47,7 @@ Use ordinary `import './sibling.vim' as sibling` for an eager dependency relativ
 | `map(xs, '...v:val...')` and dictionary methods | Convert expressions to callbacks with the API's actual parameters. Preserve whether the caller sees in-place mutation. Keep dictionary receivers at the boundary if callers inspect, extend, or replace members. |
 | Ex ranges, command placeholders, generated commands | Prefix a literal command range with a colon, e.g. `:%s/foo/bar/g`. Preserve `<line1>`, `<line2>`, `<bang>0`, `<q-args>` versus `<f-args>`, and completion semantics. Use `fnameescape()` when inserting a path into an Ex filename argument. |
 | Missing values, errors, and cleanup | Preserve sentinels and thrown/reported errors where public. Use `try` / `finally` for temporary options, views, or directories. Exercise early returns and failures after partial setup. |
+| Save, reset, and restore `'cpoptions'` around a sourced plugin | An ordinary sourced `vim9script` plugin gets Vim's default parsing flags while sourcing. Drop legacy boilerplate that existed solely to obtain those defaults. Preserve deliberate option changes and check the separate startup-vimrc rules before porting a configuration file. |
 
 ### Compilation changes control flow
 

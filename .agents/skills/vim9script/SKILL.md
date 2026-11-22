@@ -1,11 +1,13 @@
 ---
 name: vim9script
-description: Write, review, and test typed Vim9 scripts and plugins, or port legacy Vim script to Vim9 while preserving editor behavior and public APIs.
+description: Write, style, review, and test idiomatic typed Vim9 scripts and plugins, or port legacy Vim script to Vim9 while preserving editor behavior and public APIs.
 ---
 
 # Vim9 script
 
 Identify the minimum Vim build and the entry points users actually invoke. Check the project's tests and the target binary's `:version` and `:help`. Features such as classes, generics, and tuples arrived at different patch levels. When older interpreters must remain supported, select the implementation in a compatible loader before sourcing syntax they cannot parse.
+
+For writing and review, apply the [Vim9 style guide](references/style.md). It covers naming, layout, control flow, strings and patterns, and how plugin code should interact with the editor. Follow established project formatting and keep public names stable across ports.
 
 ## Choose the implementation
 
