@@ -1,3 +1,6 @@
 [submodule "reference/vim-plug"]
 	path = reference/vim-plug
 	url = https://github.com/junegunn/vim-plug.git
+[submodule "reference/vim"]
+	path = reference/vim
+	url = https://github.com/vim/vim
