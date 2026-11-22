@@ -1,0 +1,127 @@
+*plug.txt*                     vim9-plug                     *plug* *plug-toc*
+
+==============================================================================
+OVERVIEW                                                           *vim9-plug*
+
+vim9-plug is a single-file Vim plugin manager based on vim-plug 0.15.0.
+It requires Vim 9.1 or later with Vim9 script support and Git.
+
+Copy autoload/plug.vim into the autoload directory on your runtimepath.
+To migrate from vim-plug, replace the installed copy and restart Vim.
+Your existing declarations and plugin directory can be reused: >
+
+    call plug#begin()
+    Plug 'tpope/vim-sensible'
+    call plug#end()
+<
+Run :PlugInstall to install declared plugins. To use this help file, put
+it in doc/ on your runtimepath and run :helptags ALL.
+
+==============================================================================
+FUNCTIONS                                                     *plug-functions*
+
+*plug#begin()*  Call plug#begin([directory]) to start the declaration block.
+                If omitted, the directory comes from g:plug_home or the
+                first runtimepath entry followed by /plugged.
+
+*plug#()*       Register a plugin. The :Plug command normally calls this.
+                It accepts a repository and an optional tag or options
+                dictionary. Existing legacy declarations are supported.
+
+*plug#end()*    Update runtimepath, set up lazy-loading triggers, and turn
+                on filetype plugins and indentation. During startup it
+                enables syntax highlighting if it is available.
+
+*plug#load()*   Load plugins by name: plug#load('one', 'two') or
+                plug#load(['one', 'two']). Returns 1 if a plugin was
+                loaded and 0 if all were loaded or an error was reported.
+
+*plug#helptags()*  Generate help tags for declared plugin directories.
+
+*plug#shellescape()*  Escape an argument for a POSIX shell, cmd.exe, or
+                PowerShell. An optional dictionary accepts shell and
+                script (whether cmd.exe should use batch-file escaping).
+
+==============================================================================
+COMMANDS                                 *plug-commands* *:Plug* *PlugOptions*
+
+:Plug {repository} [, {options}]
+                Declare a Git repository or an externally managed local
+                plugin. A GitHub owner/repository shorthand uses
+                g:plug_url_format. A string option selects a tag.
+
+Options in a dictionary:
+
+    branch      Select a branch.
+    tag         Select a tag. A wildcard selects the latest matching tag.
+    commit      Select a commit.
+    rtp         Plugin runtime directory relative to the repository root.
+    dir         Override the plugin's installation directory.
+    as          Set the name used in commands and g:plugs.
+    frozen      Skip updating an installed plugin unless named explicitly.
+    on          Lazy-load on a command or <Plug> mapping. Accepts a string
+                or a list. An empty list allows manual loading.
+    for         Lazy-load on a filetype. Accepts a string or a list.
+    do          Post-update hook. A shell string runs in the plugin
+                directory. A string beginning with a colon runs as a Vim
+                command. A Funcref receives a dictionary with name,
+                status (installed, updated, or unchanged), and force.
+
+                                                *:PlugInstall* *:PlugUpdate*
+:PlugInstall[!] [name ...] [threads]    Install missing plugins.
+:PlugUpdate[!] [name ...] [threads]     Install or update plugins.
+                The optional thread count overrides g:plug_threads.
+                --sync waits for completion in the calling script.
+                A bang forces eligible post-update hooks and submodule
+                updates. Vim jobs and channels enable parallel operation.
+
+                                                                  *:PlugClean*
+:PlugClean[!]   Find and remove unused directories under the plugin home.
+                A bang skips the confirmation prompt.
+
+                                                     *:PlugStatus* *:PlugDiff*
+:PlugStatus     Show installation and loading status.
+:PlugDiff       Show the last update and pending changes for pinned plugins.
+
+                                                                *:PlugSnapshot*
+:PlugSnapshot[!] [file]
+                Generate a Vim script that restores current plugin
+                revisions. A bang allows replacing an existing file.
+                Source the generated script after declaring your plugins.
+
+                                                                *:PlugUpgrade*
+:PlugUpgrade    Upgrade the installed script from the vim9-plug repository.
+                The previous file is kept as plug.vim.old after an upgrade.
+
+==============================================================================
+CONFIGURATION                                           *plug-global-options*
+
+*g:plug_threads*       Maximum parallel tasks. Default: 16.
+*g:plug_shallow*       Use shallow clones when possible. Default: 1.
+*g:plug_window*        Command to open the management pane. Default: -tabnew.
+*g:plug_pwindow*       Command to open a diff preview.
+                       Default: vertical rightbelow new.
+*g:plug_url_format*    URL format for subsequent GitHub shorthand declarations.
+                       Default: https://git::@github.com/%s.git
+*g:plug_home*          Plugin installation directory.
+*g:plugs*              Dictionary of registered plugin specifications.
+*g:plugs_order*        Plugin names in declaration order.
+*g:plug_timeout*
+*g:plug_retries*       Settings for the retired Ruby and Python backends.
+                       The Vim installer does not read these settings.
+
+==============================================================================
+PANE KEYS                                                      *plug-keybindings*
+
+  q       Close the preview or pane. Abort a running installation.
+  R       Retry failed work after installation or update.
+  D / S   Open the diff or status pane.
+  U       Update the plugin on the current line or marked lines.
+  L       Load the plugin on the current line or marked lines in status.
+  ]] / [[ Jump to the next or previous plugin entry.
+  o / CR  Preview a change in :PlugDiff.
+  X       Revert an update in :PlugDiff after confirmation.
+  d{motion}, dd
+          Select directories for deletion after declining :PlugClean.
+
+ vim:tw=78:ts=8:noet:ft=help:norl:
