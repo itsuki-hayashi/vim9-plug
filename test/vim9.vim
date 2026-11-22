@@ -53,6 +53,11 @@ if has('unix')
     system('ln -s ' .. shellescape(dest) .. ' ' .. shellescape(clean_home .. '/' .. link))
     assert_equal(0, v:shell_error)
   endfor
+  mkdir(outside .. '/unmanaged', 'p')
+  mkdir(clean_home .. '/pack/vim9-plug', 'p')
+  system('ln -s ' .. shellescape(outside) .. ' '
+    .. shellescape(clean_home .. '/pack/vim9-plug/opt'))
+  assert_equal(0, v:shell_error)
   plug.Add(clean_home .. '/active-link')
 endif
 plug.End()
@@ -61,6 +66,7 @@ if has('unix')
   assert_equal('link', getftype(clean_home .. '/active-link'))
   assert_true(filereadable(clean_home .. '/link-target/marker'))
   assert_equal('', getftype(clean_home .. '/stale-link'))
+  assert_true(isdirectory(clean_home .. '/pack/vim9-plug/opt/unmanaged'))
   assert_true(filereadable($VIM9_PLUG_TEST_ROOT .. '/outside-clean/marker'))
 endif
 assert_true(filereadable(marker), join(getline(1, '$'), "\n"))

@@ -35,6 +35,7 @@ const use_jobs = has('job') && has('channel')
 const script_prefix = expand('<SID>')
 const script_number = str2nr(matchstr(script_prefix, '\d\+'))
 const base_spec: dict<any> = {branch: '', frozen: 0}
+const package_subdir = '/pack/vim9-plug/opt'
 var loaded: dict<number> = exists('loaded') ? loaded : {}
 var triggers: dict<dict<list<string>>> = exists('triggers') ? triggers : {}
 var plug_buf = exists('plug_buf') ? plug_buf : -1
@@ -44,6 +45,8 @@ var git_version: list<number> = []
 var first_rtp = ''
 var last_rtp = ''
 var managed_rtp: dict<bool> = exists('managed_rtp') ? managed_rtp : {}
+var package_rtp: dict<bool> = exists('package_rtp') ? package_rtp : {}
+var managed_packpath = exists('managed_packpath') ? managed_packpath : ''
 var clean_count = 0
 var update_state: dict<any> = {}
 var jobs: dict<dict<any>> = {}
@@ -150,7 +153,7 @@ enddef
 
 export def Begin(directory: string = ''): bool
   var home: string
-  final first_entry = get(SplitRtp(), 0, '')
+  final first_entry = get(SplitPath(&rtp), 0, '')
   if !empty(directory)
     home = Path(ModifyFilename(ExpandFilename(directory), ':p'))
   elseif exists('g:plug_home')
@@ -169,7 +172,7 @@ export def Begin(directory: string = ''): bool
   endif
 
   JobAbort(false)
-  g:plug_home = home
+  g:plug_home = absolute_home
   g:plugs = {}
   g:plugs_order = []
   ClearTriggers()
@@ -317,7 +320,7 @@ export def End()
     augroup END
   endfor
 
-  ReorgRtp()
+  RegisterRuntimePaths()
   filetype plugin indent on
   if has('vim_starting')
     if has('syntax') && !exists('g:syntax_on')
@@ -422,37 +425,132 @@ def RuntimeDirectory(entry: string): string
   return Path(ModifyFilename(substitute(entry, '\\,', ',', 'g'), ':p'))
 enddef
 
-def AddRuntimeEntry(entries: list<string>, directory: string)
-  final entry = escape(directory, ',')
-  if entry != first_rtp && entry != last_rtp && !has_key(managed_rtp, entry)
-    managed_rtp[entry] = true
-    add(entries, entry)
+def RegisterPackpath()
+  final home = escape(g:plug_home, ',')
+  final home_key = CleanPathKey(g:plug_home)
+  final before = SplitPath(&packpath)
+  final entries = copy(before)
+  if !empty(managed_packpath) && managed_packpath != home
+    filter(entries, (_, entry) => entry != managed_packpath)
+    managed_packpath = ''
+  endif
+  if empty(filter(copy(entries), (_, entry) => !empty(entry)
+      && CleanPathKey(RuntimeDirectory(entry)) == home_key))
+    add(entries, home)
+    managed_packpath = home
+  endif
+  if entries != before
+    &packpath = join(entries, ',')
   endif
 enddef
 
-def ReorgRtp()
-  final previous = managed_rtp
-  managed_rtp = {}
-  var roots: list<string> = []
-  var afters: list<string> = []
+def NativePackage(root: string): string
+  final name = ModifyFilename(root, ':t')
+  final key = CleanPathKey(root)
+  # :packadd takes a name pattern and inserts the path without escaping commas.
+  if name !~ '^[-a-zA-Z0-9_.]\+$' || name == '.' || name == '..'
+      || g:plug_home =~ '[][,?*{}$]'
+      || key != CleanPathKey(g:plug_home .. package_subdir .. '/' .. name)
+    return ''
+  endif
+  # :packadd searches every group and can also match start packages in the vimrc.
+  final matches = globpath(g:plug_home, 'pack/*/opt/' .. name, true, true)
+    + globpath(g:plug_home, 'pack/*/start/' .. name, true, true)
+  filter(matches, (_, path) => isdirectory(path))
+  return len(matches) == 1 && CleanPathKey(matches[0]) == key ? name : ''
+enddef
+
+def RegisterPackage(name: string): bool
+  final before = SplitPath(&rtp)
+  final saved_packpath = &packpath
+  try
+    noautocmd &packpath = g:plug_home
+    noautocmd execute 'packadd!' name
+  catch /^Vim\%((\a\+)\)\=:E919:/
+    return false
+  finally
+    noautocmd &packpath = saved_packpath
+  endtry
+  for entry in SplitPath(&rtp)
+    if index(before, entry) < 0
+      package_rtp[entry] = true
+    endif
+  endfor
+  return true
+enddef
+
+def RegisterRuntimePaths()
+  RegisterPackpath()
+  var paths: list<string> = []
   for name in LoadedNames()
     final root = PluginRuntimePath(g:plugs[name])
-    AddRuntimeEntry(roots, root)
+    if isdirectory(root)
+      add(paths, root)
+    endif
+  endfor
+  var active: dict<bool> = {}
+  for root in paths
+    final key = CleanPathKey(root)
+    active[key] = true
     if isdirectory(root .. '/after')
-      AddRuntimeEntry(afters, Path(root .. '/after'))
+      active[key .. 'after/'] = true
     endif
   endfor
 
-  # Keep outside runtimepath edits while replacing the old managed entries.
-  var middle = filter(SplitRtp(), (_, entry) => entry != first_rtp
-    && entry != last_rtp && !has_key(previous, entry) && !has_key(managed_rtp, entry))
-  if !empty(first_rtp)
-    insert(roots, first_rtp)
+  # Vim has no :packremove. Drop only package entries we added for old declarations.
+  final before = SplitPath(&rtp)
+  final kept = filter(copy(before), (_, entry) => !has_key(package_rtp, entry)
+    || has_key(active, CleanPathKey(RuntimeDirectory(entry))))
+  if before != kept
+    &rtp = join(kept, ',')
   endif
-  if !empty(last_rtp) && last_rtp != first_rtp
-    add(afters, last_rtp)
+  filter(package_rtp, (entry, _) => index(kept, entry) >= 0)
+
+  var present: dict<bool> = {}
+  for entry in kept
+    if !has_key(managed_rtp, entry) && !empty(entry)
+      present[CleanPathKey(RuntimeDirectory(entry))] = true
+    endif
+  endfor
+  var roots: list<string> = []
+  var afters: list<string> = []
+  for root in paths
+    final key = CleanPathKey(root)
+    final after = Path(root .. '/after')
+    final after_key = key .. 'after/'
+    if !has_key(present, key)
+      final name = NativePackage(root)
+      if !empty(name) && RegisterPackage(name)
+        present[after_key] = true
+      else
+        add(roots, escape(root, ','))
+      endif
+      present[key] = true
+    endif
+    if isdirectory(after) && !has_key(present, after_key)
+      add(afters, escape(after, ','))
+      present[after_key] = true
+    endif
+  endfor
+
+  if empty(roots) && empty(afters) && empty(managed_rtp)
+    return
   endif
-  &rtp = join(roots + middle + afters, ',')
+  # Flat checkouts, explicit runtime subdirectories and other non-package paths.
+  final current = SplitPath(&rtp)
+  final head = index(current, first_rtp) >= 0 && !empty(first_rtp) ? [first_rtp] : []
+  final tail = index(current, last_rtp) >= 0 && last_rtp != first_rtp
+      && CleanPathKey(RuntimeDirectory(last_rtp)) =~ '/after/$' ? [last_rtp] : []
+  final middle = filter(copy(current), (_, entry) => !has_key(managed_rtp, entry)
+    && index(head, entry) < 0 && index(tail, entry) < 0)
+  managed_rtp = {}
+  for entry in roots + afters
+    managed_rtp[entry] = true
+  endfor
+  final entries = head + roots + middle + afters + tail
+  if entries != current
+    &rtp = join(entries, ',')
+  endif
 enddef
 
 def Doautocmd(...args: list<string>)
@@ -572,7 +670,7 @@ def Lod(names: list<string>, types: list<string>, ...args: list<string>): bool
   if empty(newly_loaded)
     return false
   endif
-  ReorgRtp()
+  RegisterRuntimePaths()
 
   for name in newly_loaded
     var rtp = PluginRuntimePath(g:plugs[name])
@@ -705,7 +803,11 @@ def InferProperties(name: string, repo: string): dict<any>
       var fmt = get(g:, 'plug_url_format', 'https://git::@github.com/%s.git')
       uri = printf(fmt, repo)
     endif
-    return { 'dir': Dirpath(g:plug_home .. '/' .. name), 'uri': uri }
+    final legacy = g:plug_home .. '/' .. name
+    final package = g:plug_home .. package_subdir .. '/' .. name
+    # A package named "pack" shares its old path with the package hierarchy.
+    final reuse = name ==? 'pack' ? !empty(getftype(legacy .. '/.git')) : isdirectory(legacy)
+    return {dir: Dirpath(!isdirectory(package) && reuse ? legacy : package), uri: uri}
   endif
 enddef
 
@@ -999,7 +1101,7 @@ def RunHook(spec: dict<any>, info: dict<any>): string
     else
       if !get(loaded, info.name, 0)
         loaded[info.name] = 1
-        ReorgRtp()
+        RegisterRuntimePaths()
       endif
       LoadPlugin(spec)
       execute Hook[1 :]
@@ -1405,6 +1507,7 @@ def UpdateFinish()
     endfor
     silent :4 delete _
     try
+      RegisterRuntimePaths()
       RunHooks(update_state)
     catch
       Warn('echom', v:exception)
@@ -1899,7 +2002,12 @@ def Clean(force: number)
     redraw
   endfor
 
-  final todo = UnusedDirectories(g:plug_home, dirs)
+  # Other package groups can share this packpath root.
+  final todo = UnusedDirectories(g:plug_home, dirs + [g:plug_home .. '/pack'])
+  final package_home = g:plug_home .. package_subdir
+  if CleanPathKey(resolve(package_home)) == CleanPathKey(resolve(g:plug_home) .. package_subdir)
+    extend(todo, UnusedDirectories(package_home, dirs))
+  endif
   for dir in todo
     append(line('$'), '- ' .. dir)
     if has_key(errs, dir)
@@ -2379,13 +2487,13 @@ def Snapshot(force: number, ...args: list<string>)
   endif
 enddef
 
-def SplitRtp(): list<string>
-  return split(&rtp, '\\\@<!,')
+def SplitPath(option: string): list<string>
+  return split(option, '\\\@<!,', true)
 enddef
 
 plug_file = resolve(ModifyFilename(expand('<sfile>:p'), ':p'))
-first_rtp = get(SplitRtp(), 0, '')
-last_rtp = get(SplitRtp(), -1, '')
+first_rtp = get(SplitPath(&rtp), 0, '')
+last_rtp = get(SplitPath(&rtp), -1, '')
 
 if exists('g:plugs')
   g:plugs_order = get(g:, 'plugs_order', keys(g:plugs))

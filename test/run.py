@@ -50,12 +50,17 @@ def make_fixture(directory):
 
     remote = directory / "upstream remote"
     (remote / "plugin").mkdir(parents=True)
+    (remote / "autoload").mkdir()
     git(remote, "init", "-b", "main")
     git(remote, "config", "user.name", "Fixture Author")
     git(remote, "config", "user.email", "fixture@example.test")
     git(remote, "config", "core.autocrlf", "false")
     (remote / "plugin/managed.vim").write_text(
-        "let g:managed_plugin = 1\n", encoding="utf-8")
+        "let g:managed_plugin = managed_fixture#Version()\n", encoding="utf-8")
+    (remote / "autoload/managed_fixture.vim").write_text(
+        "function! managed_fixture#Version() abort\n"
+        "  return 1\n"
+        "endfunction\n", encoding="utf-8")
     git(remote, "-c", "protocol.file.allow=always", "submodule", "add",
         leaf.as_uri(), "vendor/submodule")
     git(remote, "add", ".")
@@ -117,6 +122,10 @@ def run(vim, source, directory, scenario="workflow", cmd_shell=False):
             "VIM9_PLUG_TEST_GOOD_URL": good.as_uri(),
             "VIM9_PLUG_TEST_BAD_URL": bad.as_uri(),
         })
+    elif scenario == "packages":
+        legacy = directory / "package home/legacy"
+        legacy.parent.mkdir()
+        git(directory, "clone", remote.as_uri(), str(legacy))
     elif scenario == "git":
         home = directory / "metadata plugins"
         home.mkdir()
@@ -162,20 +171,23 @@ def run(vim, source, directory, scenario="workflow", cmd_shell=False):
         driver = driver.replace("import autoload 'plug.vim' as plug",
                                 "import autoload 'upstream.vim' as plug")
         script.write_text(driver, encoding="utf-8", newline="\n")
-    argv = [vim, "-Nu", "NONE", "-U", "NONE", "-i", "NONE", "-n", "-es",
+    vimrc = str(script) if scenario == "packages" else "NONE"
+    argv = [vim, "-Nu", vimrc, "-U", "NONE", "-i", "NONE", "-n", "-es",
             "-V1", "-S", str(script)]
     if cmd_shell:
         argv[1:1] = ["--cmd", r"set shell=cmd.exe shellcmdflag=/c shellquote= shellxquote=( shellredir=>%s\ 2>&1"]
     if scenario != "jobs":
         argv.extend(["-c", "cquit 99"])
-    try:
-        process = subprocess.run(
-            argv, stdin=subprocess.DEVNULL, capture_output=True, env=env, timeout=120)
-    except subprocess.TimeoutExpired as exc:
-        raise SystemExit(f"{scenario} timed out\n{(exc.stderr or b'').decode(errors='replace')}")
-    if process.returncode:
-        details = (process.stdout + process.stderr).decode(errors="replace")
-        raise SystemExit(f"{source.name} ({source.parent}) failed\n{details}")
+    for flags in [[], ["--noplugin"]] if scenario == "packages" else [[]]:
+        try:
+            process = subprocess.run(
+                [vim, *flags, *argv[1:]], stdin=subprocess.DEVNULL,
+                capture_output=True, env=env, timeout=120)
+        except subprocess.TimeoutExpired as exc:
+            raise SystemExit(f"{scenario} timed out\n{(exc.stderr or b'').decode(errors='replace')}")
+        if process.returncode:
+            details = (process.stdout + process.stderr).decode(errors="replace")
+            raise SystemExit(f"{scenario} ({source.parent}) failed\n{details}")
     return (directory / "observed.txt").read_text(encoding="utf-8")
 
 
@@ -204,10 +216,11 @@ def main():
             actual = run(args.vim, PORT, directory / "default shell")
             compare_workflows(expected, actual, "port with the default Windows shell")
         run(args.vim, PORT, directory / "vim9 caller", "vim9")
+        run(args.vim, PORT, directory / "native packages", "packages")
         run(args.vim, PORT, directory / "git metadata", "git")
         run(args.vim, PORT, directory / "self upgrade", "upgrade")
         jobs = run(args.vim, PORT, directory / "async jobs", "jobs")
-    print("Vim9 compile, workflow parity, native caller, Git metadata, and self-upgrade passed.")
+    print("Vim9 compile, workflow parity, native packages, Git metadata, and self-upgrade passed.")
     print(jobs.strip())
 
 

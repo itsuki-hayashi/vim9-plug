@@ -57,6 +57,10 @@ endif
 
 PlugInstall --sync 2
 assert_true(isdirectory(g:plugs.managed.dir .. '/.git'), getline(1, '$')->join("\n"))
+if !exists('g:vim9_plug_test_upstream')
+  assert_equal(plugin_home .. '/pack/vim9-plug/opt/managed/',
+    substitute(g:plugs.managed.dir, '\\', '/', 'g'))
+endif
 assert_true(filereadable(g:plugs.managed.dir .. '/vendor/submodule/.git'),
       \ join(getline(1, '$'), "\n"))
 assert_equal(1, get(g:, 'managed_plugin', 0))
@@ -136,12 +140,22 @@ assert_equal($VIM9_PLUG_TEST_FIRST_SHA, Git(g:plugs.managed.dir, 'rev-parse', 'H
 execute 'source' fnameescape(snapshot)
 assert_equal($VIM9_PLUG_TEST_SECOND_SHA, Git(g:plugs.managed.dir, 'rev-parse', 'HEAD'))
 
-var stale = plugin_home .. '/obsolete clone'
+final stale = plugin_home .. (exists('g:vim9_plug_test_upstream')
+  ? '/obsolete clone' : '/pack/vim9-plug/opt/obsolete clone')
 mkdir(stale, 'p')
+final external = plugin_home .. '/pack/foreign'
+if !exists('g:vim9_plug_test_upstream')
+  mkdir(external .. '/start/keep', 'p')
+  mkdir(external .. '/opt/keep', 'p')
+endif
 PlugClean!
 assert_true(isdirectory(g:plugs.managed.dir))
 assert_false(isdirectory(stale))
 assert_match('Removed 1 directories', join(getline(1, '$'), "\n"))
+if !exists('g:vim9_plug_test_upstream')
+  assert_true(isdirectory(external .. '/start/keep'))
+  assert_true(isdirectory(external .. '/opt/keep'))
+endif
 
 if !exists('g:vim9_plug_test_upstream')
   final managed_dir = g:plugs.managed.dir

@@ -36,10 +36,28 @@ keeps the previous file as `plug.vim.old`. For a Git-managed checkout,
 use your usual Git update workflow. Neovim and the old Python and Ruby
 installation backends are outside the support scope.
 
+## Plugin layout
+
+New Git checkouts go under `<plug-home>/pack/vim9-plug/opt/<name>`, and
+vim9-plug adds the plugin home to Vim's `packpath`. The default plugin
+home is `plugged` under the first `runtimepath` entry. Set `g:plug_home`
+or pass a directory to `plug.Begin()` to choose another home.
+
+`plug.End()` registers eager packages with Vim during startup, and
+lazy packages are activated on demand. Keeping both under `opt` lets
+you remove a declaration or change when it loads without moving the
+checkout. Vim determines where the package and its `after/` directory
+appear on `runtimepath`.
+[Vim's native package documentation](https://vimhelp.org/repeat.txt.html#packages)
+
+Existing checkouts directly under the plugin home still work in place.
+Local plugins, `dir` overrides, and `rtp` subdirectories can still use
+arbitrary locations.
+
 ## Development
 
-The reference submodules contain upstream vim-plug and Vim. Initialize
-them and run the offline tests with Python 3 and Git.
+The reference submodules contain upstream vim-plug, Vim, and minpac
+v3.1.0. Initialize them and run the offline tests with Python 3 and Git.
 
 ```sh
 git submodule update --init --recursive

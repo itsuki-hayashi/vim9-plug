@@ -4,6 +4,10 @@ Replace the installed `autoload/plug.vim` and migrate the declaration block
 before restarting Vim. Your plugin directories and configuration globals
 such as `g:plug_home` and `g:plug_threads` can be reused.
 
+New Git checkouts use Vim's native package layout under the same plugin
+home at `pack/vim9-plug/opt/<name>`. Existing checkouts directly under the
+plugin home and declarations with `dir` and `rtp` continue to work in place.
+
 ## Rewrite the declaration block
 
 Before:

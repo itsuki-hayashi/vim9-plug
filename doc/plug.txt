@@ -43,7 +43,7 @@ plug.Add(repository: string, options: dict<any> = {})
                 declarations throw an exception. See |plug-options|.
 
                                                                  *plug.End()*
-plug.End()      Apply runtimepath ordering, set up lazy-loading triggers,
+plug.End()      Register eager packages, set up lazy-loading triggers,
                 and enable filetype plugins and indentation. During startup,
                 also enable syntax highlighting when available.
 
@@ -94,6 +94,27 @@ Options in a dictionary:
                 status (installed, updated, or unchanged), and force.
 
 ==============================================================================
+PLUGIN LAYOUT                                                 *plug-packages*
+
+New Git checkouts use this layout by default: >
+
+    <plug-home>/pack/vim9-plug/opt/<name>
+<
+The plugin home is added to 'packpath'. During startup, plug.End() registers
+eager packages with `:packadd!` so Vim can load them at its normal plugin
+loading step. Lazy packages are registered when their triggers fire or when
+you call |plug.Load()|. Both use the opt directory so the declaration controls
+whether and when a plugin loads. Vim handles the runtimepath precedence of
+native packages and their after directories. See |packages| and |:packadd|.
+
+Use |plug.Load()| for manual loading through vim9-plug, including its trigger
+cleanup and after/plugin scripts. Existing flat checkouts directly under the
+plugin home are reused. Local plugins and the dir and rtp options still work
+with paths outside the native layout. Paths that Vim cannot register with
+`:packadd!`, such as plugin homes containing a comma, use the same
+compatibility path handling.
+
+==============================================================================
 COMMANDS                                                       *plug-commands*
 
                                                 *:PlugInstall* *:PlugUpdate*
@@ -107,7 +128,8 @@ COMMANDS                                                       *plug-commands*
                                                                   *:PlugClean*
 :PlugClean[!]   List unused directories under the plugin home and managed
                 checkouts that need reinstallation. A declared plugin can
-                be nested several directories deep. Review the list before
+                be nested several directories deep. Other Vim package groups
+                under the plugin home are preserved. Review the list before
                 confirming deletion. A bang skips the confirmation prompt.
 
                                                      *:PlugStatus* *:PlugDiff*

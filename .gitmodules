@@ -4,3 +4,6 @@
 [submodule "reference/vim"]
 	path = reference/vim
 	url = https://github.com/vim/vim
+[submodule "reference/minpac"]
+	path = reference/minpac
+	url = https://github.com/k-takata/minpac.git
